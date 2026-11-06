@@ -1,1 +1,90 @@
-# ics-adversarial-ml-study-project
+# Study Project – Part II: Statistical Detection Methods (WADI)
+
+Continuation of sheet 1 (`../sheet1_yat`). The over-sampler of sheet 1 Task 3 (Manhattan k-NN +
+SMOTE-like interpolation of the sensor columns, actuators copied from the base sample) is ported to
+`common.py` (`knn_manhattan`, `oversample`): same algorithm, vectorised instead of one Python
+loop per row, and callable from other scripts (the original `T3.py` is an interactive script).
+
+## Setup
+
+```
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt          # numpy, pandas, matplotlib, torch (CPU is enough)
+./decompress.sh                          # unpacks both WADI zips into data/raw, creates data/cache
+```
+
+`decompress.sh` expects `WaDi.A1_9 Oct 2017.zip` and `WaDi.A2_19 Nov 2019.zip` next to it and needs
+`unzip`. Files that already exist are kept, so it's safe to run again; use `./decompress.sh --force`
+to overwrite them (e.g. after an interrupted extraction). Resulting layout:
+
+```
+data/raw/WADI.A1_9 Oct 2017/    WADI_14days.csv, WADI_attackdata.csv, attack_description.xlsx, table_WADI.pdf
+data/raw/WADI.A2_19 Nov 2019/   WADI_14days_new.csv, WADI_attackdataLABLE.csv, table_WADI.pdf
+data/cache/                     parsed data, filled on the first run of any task script
+```
+
+The CSVs are parsed once and cached in `data/cache/*.npz`.
+Every script takes `--year 2017|2019` (default 2017) and `--help`.
+
+## Files
+
+| file | content |
+|---|---|
+| `decompress.sh` | unpacks the 2017 and 2019 WADI zips into `data/raw` and creates `data/cache` |
+| `common.py` | loading / cleaning of both WADI versions, labels, column groups, splitting, min-max scaler, sheet-1 over-sampler |
+| `task1.py` | Task 1: synthetic data for k = 3, 5, 7 + MinMax, Gradient, Steadytime, Entropy + plots |
+| `task2.py` | Task 2: CUSUM / EWMA per sensor, fusion of the alerts, evaluation on the attack data |
+| `task3.py` | Task 3: VAE feature extraction (3 layer types x 3 activations, 2 decoders, hyper-parameter search) |
+
+## Task 1 – `python task1.py [--k 3 5 7] [--order random|sequential]`
+
+* The first day of normal data trains the over-sampler, the next
+  2 × 2.5 days are the real subsets A and B (2019: blocks never cross the ~3-day gap in the file).
+* All sets are min-max normalised with the scaler of the training day (same space for all).
+* For every k, 2.5 days (216 000 rows) of synthetic data → `task1_results/<year>/synthetic_k<k>.csv.gz`
+  (original units, same column layout as WADI).
+* The statistics learn one model per sensor/actuator from **real subset A**; the training day,
+  real subset B (real-vs-real baseline) and the synthetic sets are evaluated against it.
+  The sheet's wording "communication pair / protocol" and "packet sizes" comes from the network
+  version of the task; for WADI the unit is one sensor/actuator column.
+  * MinMax / Gradient / Steadytime: learned range `[min − (max−min)/4, max + (max−min)/4]`,
+    exceedance = distance outside the range. The slope is `(x[t+1] − x[t]) / 1 s`, computed by
+    hand. Steadytime = lengths of runs of an unchanged value, only for columns with ≤ 50 distinct
+    values in A.
+  * Entropy: `H = −Σ p log2 p` over the distinct values (normalised, rounded to 6 decimals), with
+    hand-written counting.
+* Output: `models_real_A.csv`, `stats_<set>.csv` (per column), `summary.csv`, `cdf_entropy.png`,
+  `ccdf_minmax.png`, and additionally `ccdf_gradient.png`, `ccdf_steady.png`.
+* `--order random` (default) is the sheet-1 behaviour: random base samples, so the synthetic
+  rows have no temporal order. `--order sequential` uses the training rows in order.
+
+## Task 2 – `python task2.py --method cusum|ewma [--train real_A|synthetic_k5|...]`
+
+Needs `task1.py` first (uses its normalised sets). Training: `--train` (default real subset A),
+validation: real subset B (normal), test: the labelled attack data.
+
+* **CUSUM**: `S_{k+1} = max(0, S_k + |r_k| − β)`, `β = mean|r| + b·std|r|` (b > 0 ⇒ E[|r| − β] < 0).
+* **EWMA**: `S_{k+1} = α·y_{k+1} + (1 − α)·S_k` on `y_k = |x_k − training mean|`.
+* Both: alert if `S_k > θ`, then `S = 0`; `θ = 1.1 · max S` on training data. b and α are chosen per
+  sensor from a grid (fewest false alerts on the first half of B).
+* **Fusion (2c)**: an alert stays active for `--hold` s (120); each sensor is weighted with
+  `1 / (1 + its false alerts on B, first half)`; attack ⇔ weighted number of active alerts > τ, with τ
+  set for a target false positive rate (`--fpr`, 1 %) on the second half of B.
+* Output `task2_results/<year>_<method>_<train>/`: `metrics.json` (point-wise precision / recall / F1 / FPR,
+  detected attack events, delay), `sensors.csv`, `decisions.csv`, `score.png`.
+
+## Task 3 – `python task3.py --M 10 --latent 8 --decoder recon|classify`
+
+* Input: windows of M consecutive readings × 123 columns (`--M`, `--stride`).
+* Layer types `dense`, `conv` (Conv1d over time), `lstm`; activations `relu`, `tanh`, `leakyrelu`
+  → 9 VAE models (`--layers`, `--acts` to restrict). Encoder: 3 hidden layers + μ / log σ²;
+  number of features = `--latent`.
+* Decoder `recon`: reconstructs the window; reconstruction error = Bernoulli KL divergence between the
+  readings and the reconstruction. It's trained on real A and validated on real B.
+* Decoder `classify`: classification branch (normal / attack) trained with categorical cross-entropy on a
+  stratified 70/15/15 split of the attack-data windows.
+* Hyper-parameter search: random search (`--trials`) over lr, hidden size, β, batch size, dropout, with
+  early stopping on validation loss.
+* Output `task3_results/<year>_M<M>_z<latent>_<decoder>/`: `features_<layer>_<act>.csv` (one row per
+  window: set, window id, first/last row, first/last time, label, f0…), `hparams_*.json`, `model_*.pt`,
+  `summary.csv`.
