@@ -5,7 +5,8 @@ over-sampler of sheet 1 (Task 3).
 
 pandas is only used for reading and writing files (CSV parsing, filling missing values, dates).
 Right after reading, the data is converted to plain Python and every calculation is done with
-dictionaries, lists and loops. torch is used for the k-NN distances (see knn_manhattan).
+dictionaries, lists and loops. Only exception: the k-NN distances use numpy for the arithmetic
+(see manhattan_to_all) and are converted back to Python lists right away.
 
 How the data is stored
 ----------------------
@@ -26,6 +27,7 @@ Time stamps are stored as whole seconds since 1970-01-01 (ints), so "one second 
 The cleaned data is cached with pickle under data/cache/dict_<year>.pkl, so pandas only reads
 the CSV files the first time.
 """
+import multiprocessing
 import os
 import pickle
 import random
@@ -265,42 +267,56 @@ class MinMax:
 
 # =================================================== over-sampler of sheet 1, Task 3
 
-def knn_manhattan(rows, k, chunk=512):
-    """rows: list of rows (every row a list of numbers).
-    For every row: the row numbers of its k nearest neighbours (Manhattan / L1 distance, the
-    row itself excluded), from the closest to the farthest. Returns a list of lists.
+def manhattan_to_all(data, i):
+    return abs(data - data[i]).sum(axis=1).tolist()
 
-    A plain Python loop would need 86400 * 86400 distance computations (each over ~50 columns),
-    which would take days, so torch computes the distances. torch.tensor accepts a normal Python
-    list of lists, so no numpy is needed."""
-    import torch
-    data = torch.tensor(rows, dtype=torch.float32)
+
+def k_smallest(dist, k, skip):
+    best_d = [float("inf")] * k
+    best_i = [-1] * k
+    worst = best_d[-1]                        # distance of the current k-th neighbour
+    for m, d in enumerate(dist):
+        if d >= worst or m == skip:
+            continue
+        pos = k - 1                           # walk left to the insert position
+        while pos > 0 and best_d[pos - 1] > d:
+            best_d[pos] = best_d[pos - 1]
+            best_i[pos] = best_i[pos - 1]
+            pos -= 1
+        best_d[pos] = d
+        best_i[pos] = m
+        worst = best_d[-1]
+    return best_i
+
+
+_DATA = None                                  # numpy copy of the rows in every worker (set by _init)
+
+
+def _init(rows):
+    import numpy as np
+    global _DATA
+    _DATA = np.array(rows, dtype=np.float64)
+
+
+def _neighbours_of(args):
+    i, k = args
+    return k_smallest(manhattan_to_all(_DATA, i), k, skip=i)
+
+
+def knn_manhattan(rows, k, workers=None):
+    workers = workers or os.cpu_count()
+    n = len(rows)
     result = []
-    for start in range(0, len(rows), chunk):
-        part = data[start:start + chunk]
-        dist = torch.cdist(part, data, p=1)          # dist[i][m] = L1 distance row start+i <-> row m
-        for i in range(len(part)):
-            dist[i, start + i] = float("inf")        # a row is not its own neighbour
-        nearest = torch.topk(dist, k, largest=False).indices
-        result.extend(nearest.tolist())
-        if (start // chunk) % 40 == 0:
-            print(f"  k-NN {min(start + chunk, len(rows))}/{len(rows)}")
+    with multiprocessing.Pool(workers, initializer=_init, initargs=(rows,)) as pool:
+        jobs = ((i, k) for i in range(n))
+        for i, nearest in enumerate(pool.imap(_neighbours_of, jobs, chunksize=64), 1):
+            result.append(nearest)
+            if i % 2000 == 0 or i == n:
+                print(f"  k-NN {i}/{n}", flush=True)
     return result
 
 
 def oversample(table, n_out, neighbours, k, order="random", seed=0):
-    """Sheet 1 Task 3 over-sampler (SMOTE-like). For every new row:
-      * pick a base row of the training data and one of its k nearest neighbours
-      * sensor columns move from the base towards the neighbour:
-            new = base + alpha * (neighbour - base),  alpha random in [0, 1)
-      * actuator / control columns are copied from the base row
-    table: the already normalised training data,
-    neighbours: output of knn_manhattan (at least k neighbours per row).
-
-    order="random"     -> base row drawn at random, exactly as in sheet 1 (no time order)
-    order="sequential" -> base rows taken one after the other (new row i is based on training
-                          row i mod n), so the output keeps the temporal order.
-    Returns a table with n_out rows."""
     rnd = random.Random(seed)
     cols = list(table)
     n = n_rows(table)

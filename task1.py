@@ -8,8 +8,7 @@ common_plain.py; pandas only reads / writes the files, all calculations are plai
   3. b) MinMax, Gradient, Steadytime and Entropy are computed. The first three learn one model per
      sensor / actuator from the reference set (real subset A) and measure how much every other
      set leaves the learned range; Entropy is computed for every set.
-  4. plots: CDF of the entropy values, CCDF of the MinMax exceedances (+ the same for Gradient and
-     Steadytime)
+  4. plots (the two the sheet asks for): CDF of the entropy values, CCDF of the MinMax exceedances
 
 (The sheet speaks about "communication pairs / protocols" and "packet sizes"; WADI has no
 network traffic, so the unit of a model here is one sensor / actuator column.)
@@ -25,6 +24,7 @@ import argparse
 import json
 import math
 import os
+import pickle
 import statistics
 
 import matplotlib
@@ -176,20 +176,17 @@ def plot(entropy, raw, year, ref_name, path):
     fig.savefig(f"{path}/cdf_entropy.png", dpi=150)
     plt.close(fig)
 
-    titles = {"minmax": "MinMax: distance outside [min_err, max_err] (normalised units)",
-              "gradient": "Gradient: slope outside [min_err, max_err] (normalised units / s)",
-              "steady": "Steadytime: steady period outside [min_err, max_err] (s)"}
-    for stat, title in titles.items():
-        fig, ax = plt.subplots(figsize=(7, 4.5))
-        for name, r in raw.items():
-            ccdf(ax, r[stat], name)
-        ax.set(xscale="log", yscale="log", xlabel=title, ylabel="CCDF  P(X > x)",
-               title=f"WADI {year}: {stat} compared to real subset {ref_name}")
-        ax.grid(alpha=.3, which="both")
-        ax.legend(fontsize=8)
-        fig.tight_layout()
-        fig.savefig(f"{path}/ccdf_{stat}.png", dpi=150)
-        plt.close(fig)
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    for name, r in raw.items():
+        ccdf(ax, r["minmax"], name)
+    ax.set(xscale="log", yscale="log",
+           xlabel="MinMax: distance outside [min_err, max_err] (normalised units)",
+           ylabel="CCDF  P(X > x)", title=f"WADI {year}: minmax compared to real subset {ref_name}")
+    ax.grid(alpha=.3, which="both")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(f"{path}/ccdf_minmax.png", dpi=150)
+    plt.close(fig)
 
 
 # =================================================== main
@@ -243,9 +240,19 @@ def main():
     day = sets["train day"]
     sensor_cols = [c for c in cols if common.is_sensor(c)]
     print(f"k-NN (Manhattan, {len(sensor_cols)} sensor columns) on {common.n_rows(day)} samples ...")
-    sensor_rows = [[day[c][t] for c in sensor_cols] for t in range(common.n_rows(day))]
-    nn = common.knn_manhattan(sensor_rows, max(a.k))
-    del sensor_rows
+    # the hand-written k-NN takes ~30 min, so its result is cached per year / training day / k
+    knn_cache = os.path.join(common.CACHE, f"knn_{a.year}_rows{r_tr[0]}-{r_tr[1]}_k{max(a.k)}.pkl")
+    if os.path.exists(knn_cache):
+        print(f"k-NN neighbours from cache {knn_cache}")
+        with open(knn_cache, "rb") as f:
+            nn = pickle.load(f)
+    else:
+        sensor_rows = [[day[c][t] for c in sensor_cols] for t in range(common.n_rows(day))]
+        nn = common.knn_manhattan(sensor_rows, max(a.k))
+        del sensor_rows
+        os.makedirs(common.CACHE, exist_ok=True)
+        with open(knn_cache, "wb") as f:
+            pickle.dump(nn, f, protocol=pickle.HIGHEST_PROTOCOL)
     n_out = int(a.days * common.DAY)
     for k in a.k:
         print(f"over-sampling k={k} ...")

@@ -2,8 +2,12 @@
 
 Continuation of sheet 1 (`../sheet1_yat`). The over-sampler of sheet 1 Task 3 (Manhattan k-NN +
 SMOTE-like interpolation of the sensor columns, actuators copied from the base sample) is ported to
-`common.py` (`knn_manhattan`, `oversample`): same algorithm, vectorised instead of one Python
-loop per row, and callable from other scripts (the original `T3.py` is an interactive script).
+`common.py` (`knn_manhattan`, `oversample`): same algorithm, callable from other scripts (the
+original `T3.py` is an interactive script). As sheet 1 requires, no library distance or
+neighbour function is used (no `cdist` / `topk` / `argsort` / `argmin`): the Manhattan distance is
+written out with numpy arithmetic (the only numpy use, converted back to Python lists right away) and
+the k nearest are picked by a hand-written selection. The brute-force search is spread over all CPU
+cores with `multiprocessing` (~2 min on 16 cores for one training day) and its result is cached in `data/cache/knn_<year>_rows<first>-<last>_k<k>.pkl`.
 
 ## Setup
 
@@ -54,7 +58,7 @@ Every script takes `--year 2017|2019` (default 2017) and `--help`.
   * Entropy: `H = −Σ p log2 p` over the distinct values (normalised, rounded to 6 decimals), with
     hand-written counting.
 * Output: `models_real_A.csv`, `stats_<set>.csv` (per column), `summary.csv`, `cdf_entropy.png`,
-  `ccdf_minmax.png`, and additionally `ccdf_gradient.png`, `ccdf_steady.png`.
+  `ccdf_minmax.png` (the two plots the sheet asks for).
 * `--order random` (default) is the sheet-1 behaviour: random base samples, so the synthetic
   rows have no temporal order. `--order sequential` uses the training rows in order.
 
@@ -71,7 +75,7 @@ validation: real subset B (normal), test: the labelled attack data.
   `1 / (1 + its false alerts on B, first half)`; attack ⇔ weighted number of active alerts > τ, with τ
   set for a target false positive rate (`--fpr`, 1 %) on the second half of B.
 * Output `task2_results/<year>_<method>_<train>/`: `metrics.json` (point-wise precision / recall / F1 / FPR,
-  detected attack events, delay), `sensors.csv`, `decisions.csv`, `score.png`.
+  detected attack events, delay), `sensors.csv`, `decisions.csv`.
 
 ## Task 3 – `python task3.py --M 10 --latent 8 --decoder recon|classify`
 
