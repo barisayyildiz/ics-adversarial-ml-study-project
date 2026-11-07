@@ -29,9 +29,6 @@ import argparse
 import json
 import os
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 
 import common
@@ -162,21 +159,6 @@ def metrics(y, pred):
             "mean_delay_s": float(np.mean(delays)) if delays else None}
 
 
-def plot(score, tau, y, title, path):
-    fig, ax = plt.subplots(figsize=(11, 4))
-    t = np.arange(len(score)) / 3600
-    for s, e in events(y):
-        ax.axvspan(s / 3600, e / 3600, color="red", alpha=.2, lw=0)
-    ax.plot(t, score, lw=.6, label="fused score")
-    ax.axhline(tau, color="k", ls="--", lw=1, label=f"tau = {tau:.3g}")
-    ax.set(xlabel="hours since start of the attack data", ylabel="weighted active alerts", title=title)
-    ax.plot([], [], color="red", alpha=.3, lw=6, label="attack (ground truth)")
-    ax.legend(loc="upper right")
-    fig.tight_layout()
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-
-
 # =================================================== main
 
 def main():
@@ -234,7 +216,6 @@ def main():
                delimiter=",", fmt=["%d", "%d", "%.4f", "%d"], header="row,label,score,attack", comments="")
     with open(f"{out}/metrics.json", "w") as f:
         json.dump(m, f, indent=1)
-    plot(score, tau, y, f"WADI {a.year} attack data -- {a.method.upper()} trained on {a.train}", f"{out}/score.png")
 
     print(json.dumps(m, indent=1))
     print(f"results in {out}/")
