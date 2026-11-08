@@ -64,16 +64,19 @@ Every script takes `--year 2017|2019` (default 2017) and `--help`.
 
 ## Task 2 – `python task2.py --method cusum|ewma [--train real_A|synthetic_k5|...]`
 
-Needs `task1.py` first (uses its normalised sets). Training: `--train` (default real subset A),
-validation: real subset B (normal), test: the labelled attack data.
+Plain Python like `task1.py` (pandas only reads the files). It rebuilds the same split and scaler
+as `task1.py` itself; only `--train synthetic_k*` needs `task1.py` first (reads
+`task1_results/<year>/synthetic_k*.csv.gz`). Training: `--train` (default real subset A;
+also `train_day`, `synthetic_k3/5/7`), validation: real subset B (normal), test: the labelled attack
+data. The previous numpy version is kept as `task2.bak.py`.
 
 * **CUSUM**: `S_{k+1} = max(0, S_k + |r_k| − β)`, `β = mean|r| + b·std|r|` (b > 0 ⇒ E[|r| − β] < 0).
-* **EWMA**: `S_{k+1} = α·y_{k+1} + (1 − α)·S_k` on `y_k = |x_k − training mean|`.
+* **EWMA**: `S_{k+1} = α·y_{k+1} + (1 − α)·S_k` on the measurements `y_k = x_k` (as in the sheet).
 * Both: alert if `S_k > θ`, then `S = 0`; `θ = 1.1 · max S` on training data. b and α are chosen per
-  sensor from a grid (fewest false alerts on the first half of B).
+  sensor from a grid (fewest false alerts on B).
 * **Fusion (2c)**: an alert stays active for `--hold` s (120); each sensor is weighted with
-  `1 / (1 + its false alerts on B, first half)`; attack ⇔ weighted number of active alerts > τ, with τ
-  set for a target false positive rate (`--fpr`, 1 %) on the second half of B.
+  `1 / (1 + its false alerts on B)`; attack ⇔ weighted number of active alerts > τ, with τ
+  = the highest score on B (no false alarm on the normal validation data).
 * Output `task2_results/<year>_<method>_<train>/`: `metrics.json` (point-wise precision / recall / F1 / FPR,
   detected attack events, delay), `sensors.csv`, `decisions.csv`.
 

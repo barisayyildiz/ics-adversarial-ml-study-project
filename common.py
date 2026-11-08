@@ -341,7 +341,16 @@ def oversample(table, n_out, neighbours, k, order="random", seed=0):
     return out
 
 
-# =================================================== writing (pandas)
+# =================================================== reading / writing result files (pandas)
+
+def load_csv(path):
+    """A file written by save_csv (e.g. the synthetic data of Task 1) back as a table
+    {column name: values}, without the Row / Date / Time columns."""
+    df = pd.read_csv(path)
+    cols = [c for c in df.columns if c not in ("Row", "Date", "Time")]
+    return {c: array("f", df[c].tolist()) for c in cols}
+
+
 
 def save_csv(table, path, start=datetime(2017, 10, 10)):
     """Same layout as the WADI files / sheet 1 output: Row, Date, Time, then the readings.
