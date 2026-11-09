@@ -16,7 +16,7 @@ network traffic, so the unit of a model here is one sensor / actuator column.)
 A data set is a table = dictionary {column name: values}: table["1_AIT_001_PV"][t] is that
 sensor at second t (see common_plain.py).
 Results go to task1_results/<year>/. This version does not write sets.npz (that file
-needs numpy): task2.py rebuilds the sets itself, task3.py still reads the sets.npz of task1.bak.py.
+needs numpy): task2.py and task3.py rebuild the sets themselves.
 
 usage: python task1_plain.py [--year 2017|2019] [--k 3 5 7] [--order random|sequential]
 """
