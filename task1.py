@@ -178,10 +178,11 @@ def plot(entropy, raw, year, ref_name, path):
 
     fig, ax = plt.subplots(figsize=(7, 4.5))
     for name, r in raw.items():
-        ccdf(ax, r["minmax"], name)
+        if name.startswith("synthetic"):        # only the generated sets in the CCDF
+            ccdf(ax, r["minmax"], name)
     ax.set(xscale="log", yscale="log",
            xlabel="MinMax: distance outside [min_err, max_err] (normalised units)",
-           ylabel="CCDF  P(X > x)", title=f"WADI {year}: minmax compared to real subset {ref_name}")
+           ylabel="CCDF  P(X > x)", title=f"WADI {year}: minmax of the synthetic sets compared to real subset {ref_name}")
     ax.grid(alpha=.3, which="both")
     ax.legend(fontsize=8)
     fig.tight_layout()
@@ -257,6 +258,7 @@ def main():
     for k in a.k:
         print(f"over-sampling k={k} ...")
         syn = common.oversample(day, n_out, nn, k, order=a.order, seed=k)
+        # a) syn is already normalised: it is interpolated from the normalised training day
         sets[f"synthetic k={k}"] = syn
         if not a.no_csv:
             path = f"{out}/synthetic_k{k}.csv.gz"
