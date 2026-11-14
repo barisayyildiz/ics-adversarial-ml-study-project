@@ -80,7 +80,7 @@ data. The previous numpy version is kept as `task2.bak.py`.
 * Output `task2_results/<year>_<method>_<train>/`: `metrics.json` (point-wise precision / recall / F1 / FPR,
   detected attack events, delay), `sensors.csv`, `decisions.csv`.
 
-## Task 3 – `python task3.py --M 10 --features 8 --decoder recon|classify [--trials 4] [--epochs 10] [--normal-split sheet|full]`
+## Task 3 – `python task3.py --M 10 --features 8 --decoder recon|classify [--epochs 10] [--normal-split sheet|full]`
 
 Rebuilds the same split and scaler as `task1.py` (no need to run task1 first).
 
@@ -96,7 +96,7 @@ Rebuilds the same split and scaler as `task1.py` (no need to run task1 first).
 * Decoder `classify`: classification branch (normal / attack) trained with categorical cross-entropy on a
   stratified 70/15/15 train/validation/test split of the attack-data windows; accuracy,
   precision, recall and F1 on the test windows go to `classification_results.csv` (one line per model).
-* Hyper-parameter search: random search (`--trials`) over lr, hidden size and batch size; the
+* Hyper-parameter search: grid search, every combination of lr, hidden size and batch size in `SPACE`; the
   configuration with the lowest validation loss is kept.
 * Output `task3_results/<year>_M<M>_f<features>_<decoder>/`: `features_<layer>_<act>.csv` (one row per
   window: set, window id, first/last row, first/last time, label, f0…) and `hparams_<layer>_<act>.json`.

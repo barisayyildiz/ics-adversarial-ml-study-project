@@ -26,8 +26,8 @@ Two decoders, --decoder picks the one that is trained:
     classify : classification branch (normal / attack), categorical cross-entropy
 Both add the VAE regulariser KL(q(z|x) || N(0, I)).
 
-Hyper-parameter search: random search (--trials configurations) over learning rate, hidden size
-and batch size; the configuration with the lowest validation loss is kept.
+Hyper-parameter search: grid search, every combination of learning rate, hidden size and batch
+size in SPACE is trained; the configuration with the lowest validation loss is kept.
 
 Output (task3_results/<year>_M<M>_f<features>_<decoder>/, with --normal-split full: ..._<decoder>_full/):
     features_<layer>_<act>.csv  one line per window: set, window id, first/last row, first/last time,
@@ -37,7 +37,7 @@ Output (task3_results/<year>_M<M>_f<features>_<decoder>/, with --normal-split fu
                                 one line per second of every window
     classification_results.csv  (classify only) accuracy / precision / recall / F1 on the test windows
 
-usage: python task3.py --M 10 --features 8 --decoder recon|classify [--trials 4] [--epochs 10]
+usage: python task3.py --M 10 --features 8 --decoder recon|classify [--epochs 10]
                        [--normal-split sheet|full]
 """
 import argparse
@@ -56,16 +56,16 @@ import common
 OUT = "task3_results"
 LAYERS = ("dense", "conv", "lstm")
 ACTS = {"relu": nn.ReLU, "tanh": nn.Tanh, "leakyrelu": nn.LeakyReLU}
-# SPACE = {
-#     "lr": [1e-3, 3e-4, 1e-4],
-#     "hidden": [64, 128, 256],
-#     "batch": [128, 256],
-# }
 SPACE = {
-    "lr": [1e-3],
-    "hidden": [64],
-    "batch": [128],
+    "lr": [1e-3, 3e-4, 1e-4],
+    "hidden": [64, 128, 256],
+    "batch": [128, 256],
 }
+# SPACE = {
+#     "lr": [1e-3],
+#     "hidden": [64],
+#     "batch": [128],
+# }
 EPS = 1e-6
 SEED = 0
 
@@ -278,14 +278,13 @@ def train(layer, act, hp, train_set, val_set, a, n, class_w):
 
 
 def search(layer, act, train_set, val_set, a, n, class_w):
-    """Random search: --trials configurations from SPACE, keeps the one with the lowest validation loss."""
-    rnd = random.Random(f"{SEED}-{layer}-{act}")
+    """Grid search: trains every configuration in SPACE, keeps the one with the lowest validation loss."""
     all_cfg = [dict(zip(SPACE, values)) for values in itertools.product(*SPACE.values())]
     trials, best = [], None
-    for t, hp in enumerate(rnd.sample(all_cfg, min(a.trials, len(all_cfg)))):
+    for t, hp in enumerate(all_cfg):
         model, vl = train(layer, act, hp, train_set, val_set, a, n, class_w)
         trials.append({**hp, "val_loss": vl})
-        print(f"   trial {t + 1}/{a.trials} {hp}  val loss {vl:.4f}")
+        print(f"   config {t + 1}/{len(all_cfg)} {hp}  val loss {vl:.4f}")
         if best is None or vl < best[1]:
             best = (model, vl, hp)
     return best, trials
@@ -351,7 +350,6 @@ def main():
     ap.add_argument("--M", type=int, default=10, help="physical readings per set")
     ap.add_argument("--features", type=int, default=8, help="number of features after encoding")
     ap.add_argument("--decoder", default="classify", choices=("recon", "classify"))
-    ap.add_argument("--trials", type=int, default=4, help="configurations tried by the hyper-parameter search")
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--year", type=int, default=2017, choices=(2017, 2019))
     ap.add_argument("--normal-split", default="sheet", choices=("sheet", "full"),
