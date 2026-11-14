@@ -80,31 +80,25 @@ data. The previous numpy version is kept as `task2.bak.py`.
 * Output `task2_results/<year>_<method>_<train>/`: `metrics.json` (point-wise precision / recall / F1 / FPR,
   detected attack events, delay), `sensors.csv`, `decisions.csv`.
 
-## Task 3 – `python task3.py --M 10 --features 8 --decoder recon|classify`
+## Task 3 – `python task3.py --M 10 --features 8 --decoder recon|classify [--trials 4] [--epochs 10] [--normal-split sheet|full]`
 
-Plain Python like `task2.py`: it rebuilds the same split and scaler as `task1.py` (no need to run
-task1 first). pandas only reads the files and numpy isn't used: windows, labels, splits, batching
-and metrics are lists / loops, torch is only used for the networks (`torch.frombuffer` turns the
-`array("f")` columns into a tensor).
+Rebuilds the same split and scaler as `task1.py` (no need to run task1 first).
 
 * Input: non-overlapping windows of M consecutive readings × 123 columns (`--M`); e.g. 216 000 rows,
   M = 10 → m = 21 600 windows.
 * Layer types `dense`, `conv` (Conv1d over time), `lstm`; activations `relu`, `tanh`, `leakyrelu`
-  → 9 VAE models (`--layers`, `--acts` to restrict). Encoder: 3 hidden layers + μ / log σ²;
-  number of features = `--features`.
+  → 9 VAE models. Encoder: 3 hidden layers + μ / log σ²; number of features = `--features`.
 * Decoder `recon`: reconstructs the window; reconstruction error = Bernoulli KL divergence between the
-  readings and the reconstruction. It's trained on real A, validated on real B and tested on the
-  attack data.
-* `--normal-split full`: instead of real A / real B (first 6 normal days, as in task 1/2), train on all
-  normal days except the last 2.5 and validate on those last 2.5 days (closest in time to the attack
-  data); the scaler is fitted on that training part. Results go to `..._<decoder>_full/`.
-  `--max-windows` still caps the training windows.
+  readings and the reconstruction. Trained on real A, validated on real B.
+* `--normal-split full`: instead of real A / real B (as in task 1/2), train on all normal days except the
+  last 2.5 and validate on those last 2.5 days; the scaler is fitted on that training part. Results go to
+  `..._<decoder>_full/`.
 * Decoder `classify`: classification branch (normal / attack) trained with categorical cross-entropy on a
-  stratified 70/15/15 split of the attack-data windows (real A / B are not used: they were recorded
-  weeks earlier and look different, so the classifier would learn "which file" instead of "attack").
-* Hyper-parameter search: random search (`--trials`) over lr, hidden size, β, batch size, dropout, with
-  early stopping on validation loss.
+  stratified 70/15/15 train/validation/test split of the attack-data windows; accuracy,
+  precision, recall and F1 on the test windows go to `classification_results.csv` (one line per model).
+* Hyper-parameter search: random search (`--trials`) over lr, hidden size and batch size; the
+  configuration with the lowest validation loss is kept.
 * Output `task3_results/<year>_M<M>_f<features>_<decoder>/`: `features_<layer>_<act>.csv` (one row per
-  window: set, window id, first/last row, first/last time (`YYYY-MM-DD hh:mm:ss`), label, f0…), `hparams_*.json`, `model_*.pt`,
-  `summary.csv`; with `--decoder recon` also `reconstruction_<layer>_<act>.csv.gz`: the readings the decoder
-  rebuilt, in original units, one row per second of every window (all 123 columns).
+  window: set, window id, first/last row, first/last time, label, f0…) and `hparams_<layer>_<act>.json`.
+  With `--decoder recon` also `reconstruction_<layer>_<act>.csv.gz`: the readings the decoder rebuilt,
+  in original units, one row per second of every window (same columns as WADI).
