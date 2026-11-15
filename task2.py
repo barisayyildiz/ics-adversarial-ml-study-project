@@ -1,36 +1,6 @@
-"""Task 2: CUSUM and EWMA attack detection on WADI -- plain Python version (uses common.py;
-pandas only reads the files, all calculations are plain Python: lists, dictionaries, loops).
+"""Task 2: per-sensor CUSUM / EWMA, weighted alert fusion, evaluation on the WADI attack data.
 
-Data (all min-max normalised with the scaler of the training day, exactly as in task1.py):
-  * training   : --train set (default real subset A; train_day or the synthetic sets of Task 1
-                 can be used too -- those are read from task1_results/<year>/)
-  * validation : real subset B (normal data only) -- tunes the per-sensor parameters, the weights
-                 of the fusion and the final decision threshold
-  * test       : the WADI attack data of the same year (labelled)
-
-Per sensor / actuator one detector runs (one "model" per column, like the statistics of Task 1):
-  CUSUM  S_0 = 0,  S_k+1 = max(0, S_k + |r_k| - beta),  r_k = x_k - x_k-1
-         beta = mean|r| + b * std|r| of the training data (b > 0 => E[|r| - beta] < 0 under H0)
-  EWMA   S_0 = y_0,  S_k+1 = alpha * y_k+1 + (1 - alpha) * S_k
-         y_k = the (normalised) sensor measurement x_k, as in the task sheet
-  Both: alert if S_k > theta, then S is restarted with 0.
-        theta = (1 + margin) * max S_k on the training data (no alert on the training data);
-        b (CUSUM) and alpha (EWMA) are chosen per sensor from a grid: fewest false alerts on the
-        validation data, ties -> the most sensitive value (smallest b / largest alpha).
-
-Fusion of the single-sensor alerts (Task 2c), at every time step t:
-  * an alert of a sensor stays "active" for --hold seconds (alerts are single points because of
-    the restart)
-  * every sensor gets a reliability weight w = 1 / (1 + its false alerts on the validation data)
-  * score(t) = sum of the weights of the active sensors;  attack  <=>  score(t) > tau
-  * tau = the highest score on the validation data (normal data -> no false alarm there)
-
-An alert list is stored as the list of seconds at which the sensor alerted (alerts are rare, so
-this is much smaller than one True/False per second).
-
-Results go to task2_results/<year>_<method>_<train>/.
-
-usage: python task2.py --method cusum|ewma [--year 2017] [--train real_A|train_day|synthetic_k3|...]
+usage: python task2.py --method cusum|ewma [--year 2017] [--train real_A|train_day|synthetic_k5|...]
 """
 import argparse
 import json
@@ -50,7 +20,7 @@ INF = float("inf")
 # =================================================== building blocks
 
 def mean_std(values):
-    """Mean and (population) standard deviation, computed by hand."""
+    """[v] -> (mean, population std)."""
     n = len(values)
     mean = sum(values) / n
     var = sum((v - mean) ** 2 for v in values) / n
@@ -58,14 +28,14 @@ def mean_std(values):
 
 
 def abs_changes(values):
-    """|r_k| with r_k = x_k - x_k-1; r_0 = 0 (there is no previous value)."""
+    """[x] -> [|r_k|] with r_k = x_k - x_k-1, r_0 = 0."""
     return [0.0] + [abs(values[t] - values[t - 1]) for t in range(1, len(values))]
 
 
 # =================================================== the two statistics (one sensor)
 
 def cusum(r, beta, theta):
-    """r: the |r_k| of one sensor. Returns (alert times, largest S reached)."""
+    """[|r_k|] of one sensor -> (alert times, max S); S = max(0, S + |r| - beta), reset to 0 after an alert."""
     alerts = []
     s = 0.0
     s_max = 0.0
@@ -79,7 +49,7 @@ def cusum(r, beta, theta):
 
 
 def ewma(y, alpha, theta):
-    """y: the measurements of one sensor. Returns (alert times, largest S reached)."""
+    """[y_k] of one sensor -> (alert times, max S); S = alpha*y + (1-alpha)*S, reset to 0 after an alert."""
     alerts = []
     s = y[0]                              # S_0 = y_0
     s_max = s
@@ -94,13 +64,14 @@ def ewma(y, alpha, theta):
 
 
 def statistic_input(model, values):
-    """The sequence the statistic runs on: |r_k| for CUSUM, the measurements x_k for EWMA."""
+    """-> [|r_k|] for CUSUM, the raw values for EWMA."""
     if model["method"] == "cusum":
         return abs_changes(values)
     return values
 
 
 def run(model, z, param, theta):
+    """Calls cusum / ewma -> (alert times, max S)."""
     if model["method"] == "cusum":
         return cusum(z, param, theta)
     return ewma(z, param, theta)
@@ -109,8 +80,7 @@ def run(model, z, param, theta):
 # =================================================== training: one model per sensor
 
 def learn(method, train, val, margin):
-    """For every column: try every grid value, theta from the training data, keep the value with
-    the fewest false alerts on val (normal data). Returns a list of models, one per column."""
+    """-> [model per column]: {col, method, grid, param (beta|alpha), theta, val_fa (false alerts on val)}."""
     models = []
     for col, values in train.items():
         m = {"col": col, "method": method}
@@ -137,7 +107,7 @@ def learn(method, train, val, margin):
 
 
 def detect(models, table):
-    """Alert times of every column of a table: {column: [t, ...]}."""
+    """models, table -> {col: [alert times]}."""
     alerts = {}
     for m in models:
         z = statistic_input(m, table[m["col"]])
@@ -148,9 +118,7 @@ def detect(models, table):
 # =================================================== fusion of the single-sensor alerts
 
 def active_periods(times, hold):
-    """Alert times of one sensor -> periods [start, end) in which it is active. Each alert stays
-    active for `hold` seconds; overlapping periods are merged.
-    Example (hold = 10): [5, 8, 30] -> [(5, 18), (30, 40)]"""
+    """alert times, hold -> merged [start, end) periods; [5, 8, 30], 10 -> [(5, 18), (30, 40)]."""
     periods = []
     for t in times:
         if periods and t < periods[-1][1]:
@@ -161,12 +129,7 @@ def active_periods(times, hold):
 
 
 def combined_score(alerts, weights, hold, n):
-    """score[t] = sum of the weights of the sensors active at second t (t = 0 .. n-1).
-
-    Only the seconds where a sensor switches on or off change the score, so those are collected
-    first; between them the score stays the same. At every change the score is summed again
-    over the active sensors (always in the same order -> exactly the same number for the same
-    set of active sensors)."""
+    """{col: [t]}, {col: weight}, hold, n -> [score per second] = sum of weights of active sensors."""
     cols = list(weights)
     changes = {}                                          # second -> [(sensor index, +1 / -1)]
     for j, col in enumerate(cols):
@@ -193,7 +156,7 @@ def combined_score(alerts, weights, hold, n):
 # =================================================== evaluation
 
 def events(y):
-    """(first, last) row of every block of consecutive attack rows."""
+    """[0/1 labels] -> [(first, last)] of every attack block."""
     ev = []
     start = None
     for t, label in enumerate(y):
@@ -208,8 +171,7 @@ def events(y):
 
 
 def metrics(y, pred):
-    """Point-wise confusion matrix / precision / recall / F1 / FPR, plus per attack: detected at
-    all, and after how many seconds (delay)."""
+    """labels, predictions -> dict: tp/fp/fn/tn, precision, recall, f1, fpr, attacks detected, mean delay."""
     tp = fp = fn = tn = 0
     for label, p in zip(y, pred):
         if p and label == 1:
@@ -240,7 +202,7 @@ def metrics(y, pred):
 # =================================================== data
 
 def load_sets(year, train_name):
-    """Same split and scaler as task1.py: (training table, validation table, test table, labels)."""
+    """-> (train, val = real B, test = attack data) normalised tables, attack labels [0/1]."""
     d = common.load_year(year)
     (day, _), (sub_a, _), (sub_b, _) = common.split_normal(d["normal"], d["normal_ts"])
     scaler = common.MinMax().fit(day)
@@ -265,6 +227,7 @@ def load_sets(year, train_name):
 # =================================================== main
 
 def main():
+    """Train, tau from real B, detect on the attack data -> sensors.csv, decisions.csv, metrics.json."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--method", required=True, choices=("cusum", "ewma"))
     ap.add_argument("--year", type=int, default=2017, choices=(2017, 2019))

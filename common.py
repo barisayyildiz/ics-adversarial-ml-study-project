@@ -1,32 +1,4 @@
-"""Shared helpers for sheet 2 -- plain Python version.
-
-Same content as common.py: loading WADI 2017 / 2019, column groups, normalisation and the k-NN
-over-sampler of sheet 1 (Task 3).
-
-pandas is only used for reading and writing files (CSV parsing, filling missing values, dates).
-Right after reading, the data is converted to plain Python and every calculation is done with
-dictionaries, lists and loops. Only exception: the k-NN distances use numpy for the arithmetic
-(see manhattan_to_all) and are converted back to Python lists right away.
-
-How the data is stored
-----------------------
-A "table" is a dictionary  {column name: values}:
-
-    table["1_AIT_001_PV"][t]   = value of sensor 1_AIT_001_PV at second t
-
-The values of a column are an array.array("f", ...) from the standard library. It works exactly
-like a list (indexing, slicing, len, for-loops, min, max, sum), but stores each number in 4 bytes
-instead of ~32 bytes for a Python float in a list. The 2017 normal file has 1.2 million rows
-x 123 columns: about 0.6 GB as arrays instead of ~5 GB as lists.
-
-Dictionaries keep the order in which keys were added, so list(table) gives the column names in
-the original file order.
-
-Time stamps are stored as whole seconds since 1970-01-01 (ints), so "one second later" is "+1".
-
-The cleaned data is cached with pickle under data/cache/dict_<year>.pkl, so pandas only reads
-the CSV files the first time.
-"""
+"""Shared WADI helpers. table = {col: array('f')}, one value per second; timestamps = int seconds since 1970."""
 import multiprocessing
 import os
 import pickle
@@ -75,30 +47,31 @@ ATTACKS_2017 = [
 # =================================================== small helpers
 
 def n_rows(table):
-    """Number of rows (seconds) of a table: the length of any of its columns."""
+    """table -> int, number of rows (seconds)."""
     first_column = next(iter(table.values()))
     return len(first_column)
 
 
 def cut_rows(table, first, end):
-    """Rows first .. end-1 of every column (a new, smaller table)."""
+    """table, first, end -> new table with rows [first, end)."""
     return {col: values[first:end] for col, values in table.items()}
 
 
 def format_seconds(seconds):
-    """seconds since 1970-01-01 -> '2017-09-25 18:00:00'."""
+    """int seconds since 1970 -> 'YYYY-MM-DD HH:MM:SS'."""
     return str(EPOCH + timedelta(seconds=seconds))
 
 
 # =================================================== loading (pandas)
 
 def _clean_name(c):
+    """Raw CSV header -> sensor name (drops the 2017 path prefix)."""
     c = c.strip()
     return c.split("\\")[-1]        # 2017: "\\WIN-25J4RO10SBF\LOG_DATA\SUTD_WADI\LOG_DATA\1_AIT_001_PV"
 
 
 def _read_csv(year, kind):
-    """One WADI file as a pandas DataFrame with clean column names."""
+    """year, 'normal'|'attack' -> pandas DataFrame with clean column names."""
     path = os.path.join(RAW, FILES[year][kind])
     print(f"reading {FILES[year][kind]} ...")
     if year == 2017 and kind == "normal":
@@ -113,7 +86,7 @@ def _read_csv(year, kind):
 
 
 def _timestamps(df, year):
-    """Time stamp of every row as a pandas Series of datetimes."""
+    """DataFrame -> pandas Series of datetimes, one per row."""
     date = df["Date"].astype(str).str.strip()
     time = df["Time"].astype(str).str.strip()
     if year == 2019:
@@ -126,7 +99,7 @@ def _timestamps(df, year):
 
 
 def _labels(df, ts, year, kind):
-    """pandas Series with 1 = attack, 0 = normal for every row."""
+    """-> pandas Series of labels per row, 1 = attack, 0 = normal."""
     label_col = [c for c in df.columns if "attack" in c.lower()]
     if label_col:                                     # 2019: 1 = no attack, -1 = attack
         return (df[label_col[0]] == -1).astype(int)
@@ -140,8 +113,7 @@ def _labels(df, ts, year, kind):
 
 
 def _read_file(year, kind):
-    """Returns (DataFrame of the readings, time stamps in seconds, labels), the last two as
-    plain Python lists."""
+    """-> (DataFrame of readings, [int seconds], [0/1 labels])."""
     df = _read_csv(year, kind)
     ts = _timestamps(df, year)
     y = _labels(df, ts, year, kind)
@@ -156,16 +128,7 @@ def _read_file(year, kind):
 
 
 def load_year(year):
-    """Normal and attack data of one year restricted to the columns both files share and that
-    are not completely empty. Missing values are filled with the last valid value (at the start
-    of a column: the first valid one).
-
-    Returns a dictionary
-        cols                 list of column names
-        normal, attack       tables {column name: values}
-        normal_ts, attack_ts time stamps (seconds since 1970) of every row
-        attack_y             label of every row of the attack file, 1 = attack, 0 = normal
-    Cached in data/cache/dict_<year>.pkl."""
+    """year -> dict: cols, normal/attack tables, normal_ts/attack_ts, attack_y (0/1); cached in data/cache/dict_<year>.pkl."""
     os.makedirs(CACHE, exist_ok=True)
     cache = os.path.join(CACHE, f"dict_{year}.pkl")
     if os.path.exists(cache):
@@ -199,8 +162,7 @@ def load_year(year):
 # =================================================== column groups (same rules as sheet 1)
 
 def is_sensor(col):
-    """Continuous process values; everything else (status, alarms, CO, SP, speed) is treated as
-    actuator / control value -- the grouping of sheet1_yat/src/T3.py."""
+    """True for continuous sensors (_PV, ...), False for actuators / control values."""
     c = col.upper()
     return "_PV" in c or "LEAK_DIFF_PRESSURE" in c or "TOTAL_CONS_REQUIRED_FLOW" in c
 
@@ -208,10 +170,7 @@ def is_sensor(col):
 # =================================================== Task 1a: splitting / normalisation
 
 def split_normal(table, ts, train_days=1.0, subset_days=2.5):
-    """One day for training the over-sampler and two disjoint 2.5-day subsets after it.
-    Every block is a gap-free piece of the recording (2019 has a hole of ~3 days); if a block
-    would cross a gap it is moved to the start of the next piece.
-    Returns [(table_block, (first_row, last_row)), ...] for train, subset A, subset B."""
+    """-> [(table, (first_row, last_row))] for train day, real A, real B (gap-free blocks)."""
     # first row of every new gap-free piece: the time jumps by more (or less) than 1 s
     breaks = []
     for i in range(1, len(ts)):
@@ -236,13 +195,10 @@ def split_normal(table, ts, train_days=1.0, subset_days=2.5):
 
 
 class MinMax:
-    """Min-max scaler fitted on one set and applied to all others (so every set lives in the same
-    space; values outside the training range end up below 0 / above 1).
-
-    lo[col]  = minimum of the column in the training set
-    rng[col] = maximum - minimum of the column (1 if it is constant, to avoid dividing by 0)"""
+    """Min-max scaler: lo[col], rng[col] fitted on one table, applied to all."""
 
     def fit(self, table):
+        """table -> self; stores lo and rng (1 if constant) per column."""
         self.lo, self.rng = {}, {}
         for col, values in table.items():
             lo, hi = min(values), max(values)
@@ -251,6 +207,7 @@ class MinMax:
         return self
 
     def transform(self, table):
+        """table -> table scaled with (v - lo) / rng."""
         out = {}
         for col, values in table.items():
             lo, rng = self.lo[col], self.rng[col]
@@ -258,6 +215,7 @@ class MinMax:
         return out
 
     def inverse(self, table):
+        """scaled table -> table in original units."""
         out = {}
         for col, values in table.items():
             lo, rng = self.lo[col], self.rng[col]
@@ -268,10 +226,12 @@ class MinMax:
 # =================================================== over-sampler of sheet 1, Task 3
 
 def manhattan_to_all(data, i):
+    """numpy rows [n, d], i -> [Manhattan distance from row i to every row]."""
     return abs(data - data[i]).sum(axis=1).tolist()
 
 
 def k_smallest(dist, k, skip):
+    """[distances], k, skip -> indices of the k nearest (ascending), skipping index skip."""
     best_d = [float("inf")] * k
     best_i = [-1] * k
     worst = best_d[-1]                        # distance of the current k-th neighbour
@@ -293,17 +253,20 @@ _DATA = None                                  # numpy copy of the rows in every 
 
 
 def _init(rows):
+    """Pool worker init: rows -> global numpy array _DATA."""
     import numpy as np
     global _DATA
     _DATA = np.array(rows, dtype=np.float64)
 
 
 def _neighbours_of(args):
+    """(i, k) -> k nearest neighbour indices of row i."""
     i, k = args
     return k_smallest(manhattan_to_all(_DATA, i), k, skip=i)
 
 
 def knn_manhattan(rows, k, workers=None):
+    """rows [[float]] (n x d), k -> neighbours[i] = [k nearest row indices]; multiprocessing."""
     workers = workers or os.cpu_count()
     n = len(rows)
     result = []
@@ -317,6 +280,7 @@ def knn_manhattan(rows, k, workers=None):
 
 
 def oversample(table, n_out, neighbours, k, order="random", seed=0):
+    """table, n_out, neighbours, k -> synthetic table: sensors interpolated, actuators copied from the base row."""
     rnd = random.Random(seed)
     cols = list(table)
     n = n_rows(table)
@@ -344,8 +308,7 @@ def oversample(table, n_out, neighbours, k, order="random", seed=0):
 # =================================================== reading / writing result files (pandas)
 
 def load_csv(path):
-    """A file written by save_csv (e.g. the synthetic data of Task 1) back as a table
-    {column name: values}, without the Row / Date / Time columns."""
+    """CSV written by save_csv -> table (without Row/Date/Time)."""
     df = pd.read_csv(path)
     cols = [c for c in df.columns if c not in ("Row", "Date", "Time")]
     return {c: array("f", df[c].tolist()) for c in cols}
@@ -353,8 +316,7 @@ def load_csv(path):
 
 
 def save_csv(table, path, start=datetime(2017, 10, 10)):
-    """Same layout as the WADI files / sheet 1 output: Row, Date, Time, then the readings.
-    A path ending in .gz is written compressed."""
+    """table -> CSV with Row, Date, Time + readings (.gz = compressed)."""
     df = pd.DataFrame(table)
     t = [start + timedelta(seconds=i) for i in range(len(df))]
     df.insert(0, "Time", [d.strftime("%H:%M:%S") for d in t])

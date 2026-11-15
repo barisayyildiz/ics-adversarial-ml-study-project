@@ -1,44 +1,6 @@
-"""Task 3: automatic feature extraction with a variational autoencoder (PyTorch).
+"""Task 3: VAE features from windows [M x n] (dense/conv/lstm x relu/tanh/leakyrelu), recon or classify decoder.
 
-Input: non-overlapping windows of M consecutive physical readings of all n sensors / actuators
-(one sample = M x n, m windows in total). M, the number of features and the decoder are read
-from the command line.
-
-Data, chosen with --normal-split:
-  sheet (default): same split and min-max scaler as task1.py / task2.py
-  * real subset A : training data of the reconstruction decoder
-  * real subset B : validation data of the reconstruction decoder
-  full: all normal days instead (scaler fitted on normal_train)
-  * normal_train  : everything except the last 2.5 days
-  * normal_val    : the last 2.5 days
-  both:
-  * attack data   : labelled; train / validation / test data (stratified 70 / 15 / 15) of the
-                    classification decoder
-
-Models: every combination of
-    layer type : dense, conv (1-d convolution over time), lstm
-    activation : relu, tanh, leakyrelu
-The encoder has 3 hidden layers (sizes h, h/2, h/4) followed by the mu / log-variance heads.
-
-Two decoders, --decoder picks the one that is trained:
-    recon    : reconstructs the window; reconstruction error = KL divergence between readings and
-               reconstruction, each value read as a Bernoulli probability
-    classify : classification branch (normal / attack), categorical cross-entropy
-Both add the VAE regulariser KL(q(z|x) || N(0, I)).
-
-Hyper-parameter search: grid search, every combination of learning rate, hidden size and batch
-size in SPACE is trained; the configuration with the lowest validation loss is kept.
-
-Output (task3_results/<year>_M<M>_f<features>_<decoder>/, with --normal-split full: ..._<decoder>_full/):
-    features_<layer>_<act>.csv  one line per window: set, window id, first/last row, first/last time,
-                                label, f0..f<features-1> (the encoder mean mu = extracted features)
-    hparams_<layer>_<act>.json  every trial of the search and the best one
-    reconstruction_<layer>_<act>.csv.gz  (recon only) the rebuilt readings in original units,
-                                one line per second of every window
-    classification_results.csv  (classify only) accuracy / precision / recall / F1 on the test windows
-
-usage: python task3.py --M 10 --features 8 --decoder recon|classify [--epochs 10]
-                       [--normal-split sheet|full]
+usage: python task3.py --M 10 --features 8 --decoder recon|classify [--epochs 10] [--normal-split sheet|full]
 """
 import argparse
 import gzip
@@ -61,11 +23,11 @@ SPACE = {
     "hidden": [64, 128, 256],
     "batch": [128, 256],
 }
-# SPACE = {
-#     "lr": [1e-3],
-#     "hidden": [64],
-#     "batch": [128],
-# }
+SPACE = {
+    "lr": [1e-3],
+    "hidden": [64],
+    "batch": [128],
+}
 EPS = 1e-6
 SEED = 0
 
@@ -73,21 +35,25 @@ SEED = 0
 # =================================================== model
 
 class LSTMStack(nn.Module):
-    """LSTM layers with the chosen activation between them."""
+    """Stacked LSTMs, sizes = [in, h1, h2, ...], activation after every layer."""
 
     def __init__(self, sizes, act):
+        """sizes: layer widths, act: activation class."""
         super().__init__()
         self.rnns = nn.ModuleList(nn.LSTM(a, b, batch_first=True) for a, b in zip(sizes[:-1], sizes[1:]))
         self.act = act()
 
     def forward(self, x):
+        """x [B, T, in] -> [B, T, sizes[-1]]."""
         for rnn in self.rnns:
             x = self.act(rnn(x)[0])
         return x
 
 
 class VAE(nn.Module):
+    """Encoder (3 hidden layers) -> mu/logvar; decoder recon -> [B, M, n] or classify -> [B, 2]."""
     def __init__(self, layer, act, M, n, n_features, hidden):
+        """layer: 'dense'|'conv'|'lstm', act: key of ACTS, hidden layer sizes h, h/2, h/4."""
         super().__init__()
         self.layer, self.M, self.n = layer, M, n
         h = [hidden, hidden // 2, hidden // 4]
@@ -128,12 +94,14 @@ class VAE(nn.Module):
         self.cls = nn.Sequential(nn.Linear(n_features, h[2]), A(), nn.Linear(h[2], 2))
 
     def encode(self, x):                                   # x [B, M, n]
+        """x [B, M, n] -> (mu, logvar), each [B, n_features]."""
         e = self.enc(x.transpose(1, 2) if self.layer == "conv" else x)
         if self.layer == "lstm":
             e = e[:, -1]                                   # state after the last reading
         return self.mu(e), self.logvar(e)
 
     def reconstruct(self, z):
+        """z [B, n_features] -> x_hat [B, M, n] in (0, 1)."""
         if self.layer == "dense":
             out = self.dec(z).view(-1, self.M, self.n)
         elif self.layer == "conv":
@@ -143,6 +111,7 @@ class VAE(nn.Module):
         return torch.sigmoid(out)
 
     def forward(self, x, decoder):
+        """x, decoder -> (out, mu, logvar); out = x_hat [B, M, n] or logits [B, 2]."""
         mu, logvar = self.encode(x)
         # reparameterization trick while training, the mean otherwise
         z = mu + torch.randn_like(mu) * torch.exp(0.5 * logvar) if self.training else mu
@@ -151,7 +120,7 @@ class VAE(nn.Module):
 
 
 def kld_reconstruction(x, x_hat):
-    """Bernoulli KL(x || x_hat), summed per window, averaged over the batch."""
+    """Bernoulli KL(x || x_hat), summed per window, mean over the batch."""
     x = x.clamp(0, 1)
     x_hat = x_hat.clamp(EPS, 1 - EPS)
     kl = x * (torch.log(x + EPS) - torch.log(x_hat)) + (1 - x) * (torch.log(1 - x + EPS) - torch.log(1 - x_hat))
@@ -159,10 +128,12 @@ def kld_reconstruction(x, x_hat):
 
 
 def kld_latent(mu, logvar):
+    """KL(N(mu, sigma^2) || N(0, I)), mean over the batch."""
     return (-0.5 * (1 + logvar - mu ** 2 - logvar.exp()).sum(1)).mean()
 
 
 def loss_fn(model, x, y, decoder, class_w):
+    """-> reconstruction KLD (recon) or cross-entropy (classify) + latent KLD."""
     out, mu, logvar = model(x, decoder)
     rec = kld_reconstruction(x, out) if decoder == "recon" else F.cross_entropy(out, y, weight=class_w)
     return rec + kld_latent(mu, logvar)
@@ -171,19 +142,12 @@ def loss_fn(model, x, y, decoder, class_w):
 # =================================================== data
 
 def to_tensor(table):
-    """Table {column: array of floats} -> tensor [rows, columns]."""
+    """table {col: array} -> tensor [rows, columns]."""
     return torch.stack([torch.frombuffer(values, dtype=torch.float32) for values in table.values()], dim=1)
 
 
 def load_sets(year, M, normal_split):
-    """Returns (sets, scaler); the scaler turns the reconstructions back into original units.
-    sets: name -> (windows [m, M, n], labels, first row of every window in the file, time stamps),
-    in the order: normal training set, normal validation set, attack data.
-      normal_split "sheet": real_A, real_B -- same split and scaler as task1.py / task2.py
-      normal_split "full" : normal_train (all normal rows except the last 2.5 days), normal_val
-                            (the last 2.5 days); the scaler is fitted on normal_train
-    A normal window has label 0, an attack window 1 if any of its readings is an attack.
-    Windows that cross a gap in the time stamps are left out."""
+    """-> (sets, scaler); sets[name] = (windows [m, M, n], labels, first rows, ts): train, val, 'attack'."""
     d = common.load_year(year)
     if normal_split == "sheet":
         (day, _), (sub_a, (first_a, _)), (sub_b, (first_b, _)) = common.split_normal(d["normal"], d["normal_ts"])
@@ -210,14 +174,12 @@ def load_sets(year, M, normal_split):
 
 
 def pick(w, y, idx):
+    """windows, labels, idx -> (windows[idx], label tensor)."""
     return w[idx], torch.tensor([y[i] for i in idx], dtype=torch.long)
 
 
 def make_split(sets, decoder):
-    """(train, validation, test), each (windows, labels).
-    recon:    train = all windows of the normal training set (real A / normal_train), validation = all
-              windows of the normal validation set (real B / normal_val); no test set (None)
-    classify: stratified 70 / 15 / 15 split of the attack-data windows."""
+    """-> (train, val, test) as (windows, labels); recon: A / B, test None; classify: 70/15/15 of attack windows."""
     if decoder == "recon":
         (w_a, y_a, _, _), (w_b, y_b, _, _), _ = sets.values()     # normal train, normal validation, attack
         return (w_a, torch.tensor(y_a)), (w_b, torch.tensor(y_b)), None
@@ -238,6 +200,7 @@ def make_split(sets, decoder):
 # =================================================== training / search
 
 def batches(x, y, bs, rnd=None):
+    """Yields (x, y) mini-batches of size bs (shuffled if rnd is given)."""
     idx = list(range(len(x)))
     if rnd is not None:
         rnd.shuffle(idx)
@@ -247,6 +210,7 @@ def batches(x, y, bs, rnd=None):
 
 
 def evaluate(model, data, decoder, class_w):
+    """-> mean loss over data, no gradients."""
     model.eval()
     total, n = 0.0, 0
     with torch.no_grad():
@@ -257,7 +221,7 @@ def evaluate(model, data, decoder, class_w):
 
 
 def train(layer, act, hp, train_set, val_set, a, n, class_w):
-    """Trains for --epochs epochs and keeps the weights of the epoch with the lowest validation loss."""
+    """-> (model with the best epoch's weights, best validation loss)."""
     torch.manual_seed(SEED)
     rnd = random.Random(SEED)
     model = VAE(layer, act, a.M, n, a.features, hp["hidden"])
@@ -278,7 +242,7 @@ def train(layer, act, hp, train_set, val_set, a, n, class_w):
 
 
 def search(layer, act, train_set, val_set, a, n, class_w):
-    """Grid search: trains every configuration in SPACE, keeps the one with the lowest validation loss."""
+    """Grid search over SPACE -> ((model, val loss, hp), trials)."""
     all_cfg = [dict(zip(SPACE, values)) for values in itertools.product(*SPACE.values())]
     trials, best = [], None
     for t, hp in enumerate(all_cfg):
@@ -293,6 +257,7 @@ def search(layer, act, train_set, val_set, a, n, class_w):
 # =================================================== features
 
 def write_features(model, sets, M, path):
+    """Encoder mean mu per window -> CSV (set, window, rows, times, label, f0..)."""
     model.eval()
     with open(path, "w") as f, torch.no_grad():
         f.write("set,window,first_row,last_row,first_time,last_time,label,"
@@ -309,8 +274,7 @@ def write_features(model, sets, M, path):
 
 
 def write_reconstruction(model, sets, scaler, path):
-    """recon: the readings rebuilt by the decoder, back in original units (value * (max - min) + min),
-    one line per second of every window, same columns as the WADI file."""
+    """recon: decoder output in original units -> CSV, one line per second of every window."""
     cols = list(scaler.lo)                                   # same column order as the windows
     lo = torch.tensor([scaler.lo[c] for c in cols])
     rng = torch.tensor([scaler.rng[c] for c in cols])
@@ -329,7 +293,7 @@ def write_reconstruction(model, sets, scaler, path):
 
 
 def classification_results(model, test_set):
-    """classify: accuracy / precision / recall / F1 (attack = positive class) on the test windows."""
+    """classify: -> {accuracy, precision, recall, f1} on the test windows."""
     model.eval()
     with torch.no_grad():
         pred = torch.cat([model(xb, "classify")[0].argmax(1) for xb, _ in batches(*test_set, 2048)])
@@ -346,6 +310,7 @@ def classification_results(model, test_set):
 # =================================================== main
 
 def main():
+    """Load windows, grid search per layer x activation, write features / reconstructions / results."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--M", type=int, default=10, help="physical readings per set")
     ap.add_argument("--features", type=int, default=8, help="number of features after encoding")

@@ -1,24 +1,6 @@
-"""Task 1: statistical analysis of the synthetic data -- plain Python version (uses
-common_plain.py; pandas only reads / writes the files, all calculations are plain Python).
+"""Task 1: synthetic data (k-NN over-sampling) + MinMax / Gradient / Steadytime / Entropy, CDF/CCDF plots.
 
-  1. one day of normal WADI data trains the sheet-1 over-sampler (k-NN interpolation), which
-     generates 2.5 days of synthetic data for every k in --k (default 3 5 7)
-  2. a) two further 2.5-day subsets of real normal data (not used for training) are cut out and
-     every set is min-max normalised with the scaler of the training day
-  3. b) MinMax, Gradient, Steadytime and Entropy are computed. The first three learn one model per
-     sensor / actuator from the reference set (real subset A) and measure how much every other
-     set leaves the learned range; Entropy is computed for every set.
-  4. plots (the two the sheet asks for): CDF of the entropy values, CCDF of the MinMax exceedances
-
-(The sheet speaks about "communication pairs / protocols" and "packet sizes"; WADI has no
-network traffic, so the unit of a model here is one sensor / actuator column.)
-
-A data set is a table = dictionary {column name: values}: table["1_AIT_001_PV"][t] is that
-sensor at second t (see common_plain.py).
-Results go to task1_results/<year>/. This version does not write sets.npz (that file
-needs numpy): task2.py and task3.py rebuild the sets themselves.
-
-usage: python task1_plain.py [--year 2017|2019] [--k 3 5 7] [--order random|sequential]
+usage: python task1.py [--year 2017|2019] [--k 3 5 7] [--order random|sequential]
 """
 import argparse
 import json
@@ -41,13 +23,13 @@ STATS = ("minmax", "gradient", "steady")
 # =================================================== building blocks
 
 def margins(lo, hi):
-    """Learned range widened by a quarter of its width on both sides."""
+    """(lo, hi) -> (lo - w/4, hi + w/4) with w = hi - lo."""
     w = (hi - lo) / 4
     return lo - w, hi + w
 
 
 def exceedance(value, lo, hi):
-    """How far one value lies outside [lo, hi] (0 inside the range)."""
+    """-> distance of value outside [lo, hi], 0 inside."""
     if value > hi:
         return value - hi
     if value < lo:
@@ -56,13 +38,12 @@ def exceedance(value, lo, hi):
 
 
 def slopes(values):
-    """Slope between consecutive samples: (v[t+1] - v[t]) / dt with dt = 1 s."""
+    """[v] -> [v[t+1] - v[t]] (dt = 1 s), length n-1."""
     return [(values[t + 1] - values[t]) / 1.0 for t in range(len(values) - 1)]
 
 
 def run_lengths(values):
-    """Lengths of the runs of identical consecutive values (steady periods).
-    Example: [5, 5, 5, 2, 2, 5] -> [3, 2, 1]"""
+    """[v] -> lengths of runs of equal values, e.g. [5,5,5,2,2,5] -> [3,2,1]."""
     if len(values) == 0:
         return []
     runs = []
@@ -78,7 +59,7 @@ def run_lengths(values):
 
 
 def value_counts(values):
-    """How often every distinct value occurs: {value: count}."""
+    """[v] -> {value: count}."""
     counts = {}
     for v in values:
         counts[v] = counts.get(v, 0) + 1
@@ -86,7 +67,7 @@ def value_counts(values):
 
 
 def shannon_entropy(values, decimals):
-    """H = -sum p_i * log2(p_i) over the distinct (rounded) values."""
+    """[v], decimals -> H = -sum p log2 p over the rounded values (bit)."""
     counts = value_counts([round(v, decimals) for v in values])
     total = len(values)
     h = 0.0
@@ -99,7 +80,7 @@ def shannon_entropy(values, decimals):
 # =================================================== the four statistics
 
 def learn(ref):
-    """One model per column from the reference set."""
+    """ref table -> [model per column]: {col, minmax: (lo, hi), gradient: (lo, hi), distinct, steady?: (lo, hi)}."""
     models = []
     for c, values in ref.items():
         g = slopes(values)
@@ -115,10 +96,7 @@ def learn(ref):
 
 
 def evaluate(models, table, decimals):
-    """Per column statistics of a set and, for the CCDFs, the exceedances.
-
-    raw[stat] = {"n": number of checked values, "outside": [every exceedance > 0]}
-    (values inside the range have exceedance 0 and are only counted, not stored)."""
+    """-> (rows: stats dict per column, raw[stat] = {'n': values checked, 'outside': [exceedances > 0]})."""
     rows = []
     raw = {stat: {"n": 0, "outside": []} for stat in STATS}
     for m in models:
@@ -148,13 +126,14 @@ def evaluate(models, table, decimals):
 # =================================================== plots
 
 def cdf(ax, values, label):
+    """Step CDF of values on ax."""
     v = sorted(values)
     n = len(v)
     ax.step(v, [(i + 1) / n for i in range(n)], where="post", label=label)
 
 
 def ccdf(ax, r, label):
-    """P(X > x) on log axes; the curve starts at the share of values outside the range."""
+    """raw[stat] -> log-log CCDF P(X > x) on ax."""
     n_all = r["n"]
     v = sorted(r["outside"])
     if not v:
@@ -164,6 +143,7 @@ def ccdf(ax, r, label):
 
 
 def plot(entropy, raw, year, ref_name, path):
+    """entropy = {set: [H per column]}, raw = {set: raw} -> cdf_entropy.png, ccdf_minmax.png."""
     os.makedirs(path, exist_ok=True)
     fig, ax = plt.subplots(figsize=(7, 4.5))
     for name, h in entropy.items():
@@ -193,6 +173,7 @@ def plot(entropy, raw, year, ref_name, path):
 # =================================================== main
 
 def write_csv(rows, path):
+    """[dict] -> CSV; header = union of the keys."""
     keys = []
     for r in rows:
         for k in r:
@@ -205,11 +186,12 @@ def write_csv(rows, path):
 
 
 def file_name(set_name):
-    """"synthetic k=3" -> "synthetic_k3" """
+    """'synthetic k=3' -> 'synthetic_k3'."""
     return set_name.replace(" ", "_").replace("=", "")
 
 
 def main():
+    """Split + normalise, over-sample per k, learn on real A, evaluate every set, write results + plots."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--year", type=int, default=2017, choices=(2017, 2019))
     ap.add_argument("--k", type=int, nargs="+", default=[3, 5, 7])
