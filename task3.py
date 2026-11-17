@@ -23,11 +23,6 @@ SPACE = {
     "hidden": [64, 128, 256],
     "batch": [128, 256],
 }
-SPACE = {
-    "lr": [1e-3],
-    "hidden": [64],
-    "batch": [128],
-}
 EPS = 1e-6
 SEED = 0
 

@@ -27,8 +27,36 @@ data/raw/WADI.A2_19 Nov 2019/   WADI_14days_new.csv, WADI_attackdataLABLE.csv, t
 data/cache/                     parsed data, filled on the first run of any task script
 ```
 
-The CSVs are parsed once and cached in `data/cache/*.npz`.
+The CSVs are parsed once and cached in `data/cache/dict_<year>.pkl`.
 Every script takes `--year 2017|2019` (default 2017) and `--help`.
+
+Without activating the venv: `venv/bin/pip install -r requirements.txt`, `venv/bin/python task1.py`.
+
+### Nano configuration
+
+```
+cat > ~/.nanorc << 'EOF'
+set tabsize 4
+set tabstospaces
+bind M-m comment main
+EOF
+```
+
+### Offline documentation
+
+```
+python -m pydoc -b                          # browse all installed docs in a local web server
+python -m pydoc matplotlib.axes.Axes.step
+python -m pydoc dict
+python -m pydoc collections.Counter
+```
+
+### Keyboard layout
+
+```
+setxkbmap tr
+gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'tr'), ('xkb', 'de')]"
+```
 
 ## Files
 
@@ -57,10 +85,10 @@ Every script takes `--year 2017|2019` (default 2017) and `--help`.
     values in A.
   * Entropy: `H = −Σ p log2 p` over the distinct values (normalised, rounded to 6 decimals), with
     hand-written counting.
-* Output: `models_real_A.csv`, `stats_<set>.csv` (per column), `summary.csv`, `cdf_entropy.png`,
+* Output: the summary per set is printed to the terminal; `cdf_entropy.png`,
   `ccdf_minmax.png` (the two plots the sheet asks for).
-* `--order random` (default) is the sheet-1 behaviour: random base samples, so the synthetic
-  rows have no temporal order. `--order sequential` uses the training rows in order.
+* `--order sequential` (default) uses the training rows in order. `--order random` is the sheet-1
+  behaviour: random base samples, so the synthetic rows have no temporal order.
 
 ## Task 2 – `python task2.py --method cusum|ewma [--train real_A|synthetic_k5|...]`
 

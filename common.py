@@ -128,7 +128,16 @@ def _read_file(year, kind):
 
 
 def load_year(year):
-    """year -> dict: cols, normal/attack tables, normal_ts/attack_ts, attack_y (0/1); cached in data/cache/dict_<year>.pkl."""
+    """Normal and attack data of one year restricted to the columns both files share and that
+    are not completely empty. Missing values are filled with the last valid value (at the start
+    of a column: the first valid one).
+
+    Returns a dictionary
+        cols                 list of column names
+        normal, attack       tables {column name: values}
+        normal_ts, attack_ts time stamps (seconds since 1970) of every row
+        attack_y             label of every row of the attack file, 1 = attack, 0 = normal
+    Cached in data/cache/dict_<year>.pkl."""
     os.makedirs(CACHE, exist_ok=True)
     cache = os.path.join(CACHE, f"dict_{year}.pkl")
     if os.path.exists(cache):

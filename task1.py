@@ -172,24 +172,6 @@ def plot(entropy, raw, year, ref_name, path):
 
 # =================================================== main
 
-def write_csv(rows, path):
-    """[dict] -> CSV; header = union of the keys."""
-    keys = []
-    for r in rows:
-        for k in r:
-            if k not in keys:
-                keys.append(k)
-    with open(path, "w") as f:
-        f.write(",".join(keys) + "\n")
-        for r in rows:
-            f.write(",".join(str(r.get(k, "")) for k in keys) + "\n")
-
-
-def file_name(set_name):
-    """'synthetic k=3' -> 'synthetic_k3'."""
-    return set_name.replace(" ", "_").replace("=", "")
-
-
 def main():
     """Split + normalise, over-sample per k, learn on real A, evaluate every set, write results + plots."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -256,20 +238,11 @@ def main():
     models = learn(sets["real A"])
     n_steady = sum(1 for m in models if "steady" in m)
     print(f"Steadytime applies to {n_steady}/{len(cols)} columns (<= {STEADY_MAX_DISTINCT} distinct values)")
-    model_rows = []
-    for m in models:
-        steady = m.get("steady", ("", ""))
-        model_rows.append({"col": m["col"], "distinct": m["distinct"],
-                           "minmax_lo": m["minmax"][0], "minmax_hi": m["minmax"][1],
-                           "gradient_lo": m["gradient"][0], "gradient_hi": m["gradient"][1],
-                           "steady_lo": steady[0], "steady_hi": steady[1]})
-    write_csv(model_rows, f"{out}/models_real_A.csv")
 
     entropy, raw, summary = {}, {}, []
     for name, table in sets.items():
         print(f"statistics of {name} ...")
         rows, r = evaluate(models, table, a.decimals)
-        write_csv(rows, f"{out}/stats_{file_name(name)}.csv")
         entropy[name] = [row["entropy"] for row in rows]
         if name != "real A":                    # the reference cannot exceed its own range
             raw[name] = r
@@ -285,7 +258,6 @@ def main():
         s["entropy: median [bit]"] = statistics.median(entropy[name])
         summary.append(s)
 
-    write_csv(summary, f"{out}/summary.csv")
     print()
     for s in summary:
         print(s["set"])
@@ -293,7 +265,7 @@ def main():
             if k != "set":
                 print(f"   {k:42s} {v:.4g}" if isinstance(v, float) else f"   {k:42s} {v}")
     plot(entropy, raw, a.year, ref, out)
-    print(f"\nresults and plots in {out}/")
+    print(f"\nplots in {out}/")
 
 
 if __name__ == "__main__":
