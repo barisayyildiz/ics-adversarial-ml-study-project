@@ -115,7 +115,7 @@ class VAE(nn.Module):
 
 
 def kld_reconstruction(x, x_hat):
-    """Bernoulli KL(x || x_hat), summed per window, mean over the batch."""
+    """KL divergence between x and x_hat (values in [0, 1]), summed per window, mean over the batch."""
     x = x.clamp(0, 1)
     x_hat = x_hat.clamp(EPS, 1 - EPS)
     kl = x * (torch.log(x + EPS) - torch.log(x_hat)) + (1 - x) * (torch.log(1 - x + EPS) - torch.log(1 - x_hat))
