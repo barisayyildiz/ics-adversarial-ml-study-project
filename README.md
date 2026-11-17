@@ -104,5 +104,5 @@ Rebuilds the same split and scaler as `task1.py` (no need to run task1 first).
   in original units, one row per second of every window (same columns as WADI).
 
 ### Task 3 Results
-* [Task 3 Result Set 1 (2017](https://www.b-tu.de/owncloud/s/a8d8Jk52CnnJC8W)
-* [Task 3 Result Set 2 (2019)(https://www.b-tu.de/owncloud/s/5osg4Gk2P56wX72)
+* [Task 3 Result Set 1 (2017) (https://www.b-tu.de/owncloud/s/a8d8Jk52CnnJC8W)
+* [Task 3 Result Set 2 (2019) (https://www.b-tu.de/owncloud/s/5osg4Gk2P56wX72)
