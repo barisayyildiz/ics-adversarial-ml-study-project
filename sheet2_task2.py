@@ -1,6 +1,6 @@
 """Task 2: per-sensor CUSUM / EWMA, weighted alert fusion, evaluation on the WADI attack data.
 
-usage: python task2.py --method cusum|ewma [--year 2017] [--train real_A|train_day|synthetic_k5|...]
+usage: python toolbox.py -s s2-detection --method cusum|ewma [--year 2017] [--train real_A|train_day|synthetic_k5|...]
 """
 import argparse
 import json
@@ -9,8 +9,8 @@ import os
 
 import common
 
-TASK1 = "task1_results"
-OUT = "task2_results"
+TASK1 = "results/sheet2_task1"
+OUT = "results/sheet2_task2"
 CUSUM_B = [0.5, 1.0, 2.0, 4.0]                          # beta = mean|r| + b * std|r|
 EWMA_ALPHA = [0.001, 0.01, 0.05, 0.1, 0.3, 0.6]
 EPS = 1e-6
@@ -214,7 +214,7 @@ def load_sets(year, train_name):
     elif train_name.startswith("synthetic_k"):
         path = f"{TASK1}/{year}/{train_name}.csv.gz"
         if not os.path.exists(path):
-            raise SystemExit(f"{path} missing -- run  python task1.py --year {year}  first")
+            raise SystemExit(f"{path} missing -- run  python toolbox.py -s s2-statistics --year {year}  first")
         print(f"reading {path} ...")
         train = common.load_csv(path)                      # original units, like the WADI files
     else:
@@ -226,8 +226,8 @@ def load_sets(year, train_name):
 
 # =================================================== main
 
-def main():
-    """Train, tau from real B, detect on the attack data -> sensors.csv, decisions.csv, metrics.json."""
+def parser():
+    """-> command line parser of this task."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--method", required=True, choices=("cusum", "ewma"))
     ap.add_argument("--year", type=int, default=2017, choices=(2017, 2019))
@@ -235,7 +235,12 @@ def main():
                     help="training set: real_A, train_day, synthetic_k3, synthetic_k5, synthetic_k7")
     ap.add_argument("--margin", type=float, default=0.1, help="theta = (1 + margin) * max training statistic")
     ap.add_argument("--hold", type=int, default=120, help="seconds an alert stays active for the fusion")
-    a = ap.parse_args()
+    return ap
+
+
+def main(argv=None):
+    """Train, tau from real B, detect on the attack data -> sensors.csv, decisions.csv, metrics.json."""
+    a = parser().parse_args(argv)
 
     train, val, test, y = load_sets(a.year, a.train)
     n_test = common.n_rows(test)

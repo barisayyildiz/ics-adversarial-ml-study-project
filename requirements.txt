@@ -2,3 +2,5 @@ numpy
 pandas
 matplotlib
 torch
+scikit-learn
+pyarrow

@@ -4,6 +4,9 @@
 #   data/raw/WADI.A1_9 Oct 2017/WADI_14days.csv, WADI_attackdata.csv, ...
 #   data/raw/WADI.A2_19 Nov 2019/WADI_14days_new.csv, WADI_attackdataLABLE.csv, ...
 #   data/cache/                      (empty, filled by common.load_year)
+#   data/sheet1/raw/2017/            (links to the 2017 CSVs for the sheet 1 scripts)
+#
+# The zips are looked for next to this script, then one folder up.
 #
 # Existing files are kept (safe to run again); --force overwrites them.
 #
@@ -38,6 +41,7 @@ mkdir -p "$RAW" "$CACHE"
 missing=0
 for zip in "${ZIPS[@]}"; do
     path="$HERE/$zip"
+    [[ -f "$path" ]] || path="$HERE/../$zip"
     if [[ ! -f "$path" ]]; then
         echo "zip not found: $path" >&2
         missing=1
@@ -46,6 +50,12 @@ for zip in "${ZIPS[@]}"; do
     echo "== $zip"
     # -x: skip the Windows folder metadata file
     unzip $overwrite "$path" -d "$RAW" -x "*/desktop.ini"
+done
+
+# sheet 1 scripts (sheet1/T*.py) read data/sheet1/raw/2017/*.csv and write data/sheet1/processed
+mkdir -p "$HERE/data/sheet1/raw/2017" "$HERE/data/sheet1/processed"
+for f in WADI_14days.csv WADI_attackdata.csv; do
+    ln -sf "$RAW/WADI.A1_9 Oct 2017/$f" "$HERE/data/sheet1/raw/2017/$f"
 done
 
 echo "done -> $RAW"

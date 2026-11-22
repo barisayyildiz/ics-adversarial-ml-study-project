@@ -1,4 +1,5 @@
-"""Shared WADI helpers. table = {col: array('f')}, one value per second; timestamps = int seconds since 1970."""
+"""Shared WADI helpers (sheets 2 and 3). table = {col: array('f')}, one value per second; timestamps = int seconds since 1970."""
+import csv
 import multiprocessing
 import os
 import pickle
@@ -332,3 +333,135 @@ def save_csv(table, path, start=datetime(2017, 10, 10)):
     df.insert(0, "Date", [d.strftime("%d/%m/%Y") for d in t])
     df.insert(0, "Row", list(range(1, len(df) + 1)))
     df.to_csv(path, index=False, float_format="%.6g")
+
+
+# =================================================== sheet 3: samples, k-fold cross-validation, scenarios
+# A sample is one window of M readings: (src, first_row, attack type) with src = "normal" | "attack"
+# (the WADI file) and attack type -1 = no attack, 0, 1, ... = index of the attack block in the attack file.
+
+def attack_blocks(y):
+    """[0/1 labels] -> [(first, last)] of every attack block; block i = attack type i."""
+    blocks = []
+    start = None
+    for t, label in enumerate(y):
+        if label == 1 and start is None:
+            start = t
+        if label != 1 and start is not None:
+            blocks.append((start, t - 1))
+            start = None
+    if start is not None:
+        blocks.append((start, len(y) - 1))
+    return blocks
+
+
+def make_folds(d, M, k, n_normal, attack_step=1):
+    """-> (normal_folds, attack_folds): normal_folds[f] = [sample], attack_folds[type][f] = [sample].
+    Folds are contiguous in time. Every fold of every attack type has the same number of samples."""
+    y = d["attack_y"]
+
+    # normal: non-overlapping gap-free windows of the normal file + the attack-free ones of the attack file
+    normal = []
+    for src in ("normal", "attack"):
+        ts = d[src + "_ts"]
+        for s in range(0, len(ts) - M + 1, M):
+            if ts[s + M - 1] - ts[s] != M - 1:
+                continue
+            if src == "attack" and max(y[s:s + M]) == 1:
+                continue
+            normal.append((src, s, -1))
+    if n_normal < len(normal):                        # every j-th window, keeps the time order
+        step = len(normal) / n_normal
+        normal = [normal[int(i * step)] for i in range(n_normal)]
+    size = len(normal) // k
+    normal_folds = [normal[f * size:(f + 1) * size] for f in range(k)]
+
+    # attacks: every block is cut into k row chunks, sliding windows inside a chunk
+    # (so no window has rows in two folds)
+    starts = []                                       # starts[type][f] = [first rows]
+    for first, last in attack_blocks(y):
+        rows = last - first + 1
+        per_fold = []
+        for f in range(k):
+            a = first + f * rows // k
+            b = first + (f + 1) * rows // k           # end of the chunk (exclusive)
+            per_fold.append(list(range(a, b - M + 1, attack_step)))
+        starts.append(per_fold)
+    n = min(len(chunk) for per_fold in starts for chunk in per_fold)
+    if n == 0:
+        raise SystemExit(f"the shortest attack is too short for k={k} folds of windows with M={M}")
+    attack_folds = []
+    for t, per_fold in enumerate(starts):             # n samples per fold, evenly spread over the chunk
+        attack_folds.append([[("attack", chunk[int(i * len(chunk) / n)], t) for i in range(n)]
+                             for chunk in per_fold])
+    return normal_folds, attack_folds
+
+
+def scenario_types(scenario, fold, n_types):
+    """-> attack types in the training data: 1 none, 2 half of them, 3 exactly one (rotating with the fold)."""
+    if scenario == 1:
+        return []
+    if scenario == 2:
+        return [(fold + j) % n_types for j in range(n_types // 2)]
+    return [fold % n_types]
+
+
+def split(normal_folds, attack_folds, scenario, fold):
+    """-> (train samples, test samples) of one cross-validation iteration."""
+    train = [s for f, part in enumerate(normal_folds) if f != fold for s in part]
+    for t in scenario_types(scenario, fold, len(attack_folds)):
+        train += [s for f, part in enumerate(attack_folds[t]) if f != fold for s in part]
+    test = list(normal_folds[fold])
+    for per_fold in attack_folds:                     # all attack types in every test set
+        test += per_fold[fold]
+    return train, test
+
+
+def load_folds(year, M, k, n_normal, attack_step):
+    """-> (d, normal_folds, attack_folds, windows); windows[sample] = M rows of normalised readings.
+    Min-max normalisation over the merged normal + attack file (some columns, e.g. 2_MCV_007_CO,
+    are almost constant in the normal file and would reach values of 100+ otherwise)."""
+    d = load_year(year)
+    lo, rng = [], []
+    for c in d["cols"]:
+        a = min(min(d["normal"][c]), min(d["attack"][c]))
+        b = max(max(d["normal"][c]), max(d["attack"][c]))
+        lo.append(a)
+        rng.append(b - a if b != a else 1.0)
+    normal_folds, attack_folds = make_folds(d, M, k, n_normal, attack_step)
+    samples = [s for part in normal_folds for s in part]
+    samples += [s for per_fold in attack_folds for part in per_fold for s in part]
+    print(f"WADI {year}: {len(samples)} windows of M={M}, k={k} folds, "
+          f"{len(normal_folds[0])} normal + {len(attack_folds)} attack types x {len(attack_folds[0][0])} "
+          f"attack windows per fold")
+    windows = {}
+    for src, first, t in samples:
+        table = d[src]
+        windows[(src, first, t)] = [[(table[c][r] - lo[j]) / rng[j] for j, c in enumerate(d["cols"])]
+                                    for r in range(first, first + M)]
+    return d, normal_folds, attack_folds, windows
+
+
+def features_dir(root, year, M, k, scenario, source):
+    """-> folder of the feature files of one scenario / feature source (pca_beta0.998, vae_dense_relu, ...)."""
+    return os.path.join(root, f"{year}_M{M}_k{k}", f"scenario{scenario}", source)
+
+
+def write_features(path, d, samples, feats):
+    """samples, [feature vector per sample] -> CSV: window, source, first_row, time, label, attack_type, f0, ..."""
+    with open(path, "w") as f:
+        f.write("window,source,first_row,time,label,attack_type," + ",".join(f"f{i}" for i in range(len(feats[0]))) + "\n")
+        for i, ((src, first, t), x) in enumerate(zip(samples, feats)):
+            time = format_seconds(d[src + "_ts"][first])
+            f.write(f"{i},{src},{first + 1},{time},{int(t >= 0)},{t},"
+                    + ",".join(f"{v:.6g}" for v in x) + "\n")
+
+
+def read_features(path):
+    """CSV of write_features -> (info dicts, [feature vector], [0/1 label])."""
+    info, x, y = [], [], []
+    with open(path) as f:
+        for row in csv.DictReader(f):
+            info.append({key: row[key] for key in ("window", "source", "first_row", "time", "attack_type")})
+            x.append([float(v) for key, v in row.items() if key.startswith("f") and key != "first_row"])
+            y.append(int(row["label"]))
+    return info, x, y

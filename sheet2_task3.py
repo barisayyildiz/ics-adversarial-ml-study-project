@@ -1,6 +1,6 @@
 """Task 3: VAE features from windows [M x n] (dense/conv/lstm x relu/tanh/leakyrelu), recon or classify decoder.
 
-usage: python task3.py --M 10 --features 8 --decoder recon|classify [--epochs 10] [--normal-split sheet|full]
+usage: python toolbox.py -s s2-vae --M 10 --features 8 --decoder recon|classify [--epochs 10] [--normal-split sheet|full]
 """
 import argparse
 import gzip
@@ -15,7 +15,7 @@ import torch.nn.functional as F
 
 import common
 
-OUT = "task3_results"
+OUT = "results/sheet2_task3"
 LAYERS = ("dense", "conv", "lstm")
 ACTS = {"relu": nn.ReLU, "tanh": nn.Tanh, "leakyrelu": nn.LeakyReLU}
 SPACE = {
@@ -304,8 +304,8 @@ def classification_results(model, test_set):
 
 # =================================================== main
 
-def main():
-    """Load windows, grid search per layer x activation, write features / reconstructions / results."""
+def parser():
+    """-> command line parser of this task."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--M", type=int, default=10, help="physical readings per set")
     ap.add_argument("--features", type=int, default=8, help="number of features after encoding")
@@ -314,7 +314,12 @@ def main():
     ap.add_argument("--year", type=int, default=2017, choices=(2017, 2019))
     ap.add_argument("--normal-split", default="sheet", choices=("sheet", "full"),
                     help="sheet: real A / real B of task1; full: all normal days, the last 2.5 days for validation")
-    a = ap.parse_args()
+    return ap
+
+
+def main(argv=None):
+    """Load windows, grid search per layer x activation, write features / reconstructions / results."""
+    a = parser().parse_args(argv)
 
     out = f"{OUT}/{a.year}_M{a.M}_f{a.features}_{a.decoder}" + ("_full" if a.normal_split == "full" else "")
     os.makedirs(out, exist_ok=True)

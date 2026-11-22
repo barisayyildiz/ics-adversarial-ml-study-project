@@ -1,95 +1,69 @@
-# Study Project – Part II: Statistical Detection Methods (WADI)
+# Study Project – Part III: Feature Generation & Detection Methods (WADI)
 
-Continuation of sheet 1. The sheet-1 over-sampler (Manhattan k-NN + SMOTE-like interpolation of the
-sensors, actuators copied from the base sample) is ported to `common.py` without library neighbour
-functions; the k-NN search runs on all cores (~2 min on 16) and is cached in `data/cache/`.
+Continuation of sheets 1 and 2. All code of the three sheets is started through one toolbox.
 
 ## Setup
 
 ```
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt     # numpy, pandas, matplotlib, torch (CPU is enough)
-./decompress.sh                     # WADI zips -> data/raw, creates data/cache (--force to overwrite)
+pip install -r requirements.txt     # numpy, pandas, matplotlib, torch, scikit-learn, pyarrow
+./decompress.sh                     # WADI zips (here or in ..) -> data/raw, data/cache, data/sheet1
 ```
 
-`decompress.sh` needs `unzip` and the two WADI zips next to it. Parsed CSVs are cached in
-`data/cache/dict_<year>.pkl`. Every script takes `--year 2017|2019` (default 2017) and `--help`.
+## Toolbox – `python toolbox.py -h | -s <mode> [parameters]`
 
-### Helpers
+| mode | content | file |
+|---|---|---|
+| `s1-analysis` | sheet 1, tasks 1 + 2 (interactive, no parameters) | `sheet1/T1.py`, `sheet1/T2.py` |
+| `s1-oversampling` | sheet 1, task 3 (interactive) | `sheet1/T3.py` |
+| `s2-statistics` | sheet 2, task 1 | `sheet2_task1.py` |
+| `s2-detection` | sheet 2, task 2 | `sheet2_task2.py` |
+| `s2-vae` | sheet 2, task 3 | `sheet2_task3.py` |
+| `s3-pca` | sheet 3, task 1 | `task1.py` |
+| `s3-features` | sheet 3, task 2 b) | `task2_features.py` |
+| `s3-classify` | sheet 3, task 2 c/d) | `task2_classify.py` |
 
-```
-cat > ~/.nanorc << 'EOF'            # nano: 4-space indentation, M-m comments a line
-set tabsize 4
-set tabstospaces
-bind M-m comment main
-EOF
+`python toolbox.py -s <mode> -h` shows the parameters of one mode. Results are written to `results/`.
 
-python -m pydoc -b                  # offline docs in the browser; or e.g. python -m pydoc dict
+## Samples and k-fold cross-validation (`common.py`)
 
-setxkbmap tr                        # keyboard layout
-gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'tr'), ('xkb', 'de')]"
-```
+* Normal and attack file are merged; min-max normalisation over both files.
+* A sample is a window of `--M` (10) readings. Normal windows: non-overlapping, gap-free, from the normal
+  file and the attack-free part of the attack file; `--normal-windows` (4000) of them, evenly spread.
+* Attack type = one attack block of the attack file (14 per year).
+* Folds are contiguous in time. Every attack block is cut into k row chunks and the windows of a chunk
+  (step `--attack-step`, 1 = sliding) stay inside it, so no window belongs to two folds. Every attack type
+  gets the same number of windows per fold (limited by the shortest attack, 88 s).
+* Iteration f: test = normal fold f + attack fold f of **all** types; train = the other normal folds +
+  the other folds of the training attack types:
 
-## Files
+| scenario | attack types in training (rotating with f) | classifiers |
+|---|---|---|
+| 1 | none | `ocsvm`, `elliptic`, `lof` (one-class) |
+| 2 | half: types f, f+1, …, f+6 (mod 14) | `svm`, `rf`, `knn` (binary) |
+| 3 | exactly one: type f (mod 14) | `svm`, `rf`, `knn` (binary) |
 
-| file | content |
-|---|---|
-| `common.py` | WADI loading / cleaning, labels, split, min-max scaler, over-sampler |
-| `task1.py` | synthetic data (k = 3, 5, 7), MinMax / Gradient / Steadytime / Entropy, plots |
-| `task2.py` | CUSUM / EWMA per sensor, alert fusion, evaluation on the attack data |
-| `task3.py` | VAE features: 3 layer types × 3 activations, 2 decoders, hyper-parameter search |
+## Task 1 – `python toolbox.py -s s3-pca [--year 2017] [--beta 0.998 0.895 0.879] [--components K]`
 
-All tasks share one split: day 1 of the normal data trains the over-sampler, the next 2 × 2.5 days are
-real subsets A and B (2019: never across the ~3-day gap). Everything is min-max normalised with the
-scaler of day 1.
+Train = normal file, test = attack file, min-max scaler of the normal file. Plain Python: covariance
+`Σ(x−x̄)(y−ȳ)/N` of every pair of columns of the normal file, eigenvalues and eigenvectors with the Jacobi
+method, K = smallest dimension with `Σ_{i≤K} λ_i / Σ λ_i > β` (or `--components`). Every reading is centred
+and projected onto the first K eigenvectors.
+Output `results/s3_pca/<year>/`: `pca_beta<β>_{train,test}.csv.gz` (row, time, label, f0, …), `eigenvalues.json`.
+Takes ~20 min per year (1.2M rows in plain Python).
 
-## Task 1 – `python task1.py [--k 3 5 7] [--order sequential|random]`
+## Task 2 b) – `python toolbox.py -s s3-features [--models dense_relu lstm_tanh] [--epochs 10] [--k 8]`
 
-* Per k, 2.5 days of synthetic data → `task1_results/<year>/synthetic_k<k>.csv.gz` (original units).
-  `--order sequential` (default) uses the training rows in order, `random` as in sheet 1.
-* One model per sensor/actuator is learned on **real A**; the training day, real B and the synthetic
-  sets are evaluated against it.
-  * MinMax / Gradient / Steadytime: range `[min − (max−min)/4, max + (max−min)/4]`, exceedance =
-    distance outside it. Gradient `x[t+1] − x[t]`; Steadytime = run lengths of unchanged values
-    (columns with ≤ 50 distinct values).
-  * Entropy `H = −Σ p log2 p` over distinct values (rounded to 6 decimals).
-* Output: summary in the terminal, `cdf_entropy.png`, `ccdf_minmax.png`.
+The sheet 2 VAE is trained per scenario and fold on the training windows: reconstruction (KLD) decoder in
+scenario 1 (only normal data), classification decoder in scenarios 2 and 3. Features = encoder mean.
 
-## Task 2 – `python task2.py --method cusum|ewma [--train real_A|train_day|synthetic_k3|k5|k7]`
+Feature files of Task 2 b):
+`results/s3_features/<year>_M<M>_k<k>/scenario<s>/<source>/fold<f>_{train,test}.csv`, `<source>` =
+`vae_<layer>_<activation>`. Columns: `window, source, first_row, time, label,
+attack_type, f0, f1, …`.
 
-Train on `--train`, validate on real B, test on the labelled attack data. `synthetic_k*` needs
-`task1.py` first.
+## Task 2 c/d) – `python toolbox.py -s s3-classify --scenario 1|2|3 --clf <clf> --features <source>`
 
-* **CUSUM**: `S_{k+1} = max(0, S_k + |r_k| − β)`, `β = mean|r| + b·std|r|`.
-* **EWMA**: `S_{k+1} = α·y_{k+1} + (1 − α)·S_k`.
-* Alert if `S_k > θ` (then `S = 0`), `θ = 1.1 · max S` on training data; b and α per sensor from a grid
-  (fewest false alerts on B).
-* **Fusion**: alerts stay active `--hold` s (120), weight `1 / (1 + false alerts on B)`; attack ⇔
-  weighted active alerts > τ = highest score on B.
-* Output `task2_results/<year>_<method>_<train>/`: `metrics.json` (precision / recall / F1 / FPR,
-  detected events, delay), `sensors.csv`, `decisions.csv`.
-
-## Task 3 – `python task3.py --M 10 --features 8 --decoder recon|classify [--epochs 10] [--normal-split sheet|full]`
-
-* Input: non-overlapping windows of M readings × 123 columns.
-* Layers `dense`, `conv`, `lstm` × activations `relu`, `tanh`, `leakyrelu` → 9 VAEs; encoder with 3 hidden
-  layers, `--features` latent features.
-* `recon`: reconstruction with KL divergence as the error, trained on real A, validated on real B. `--normal-split full`
-  trains on all normal days except the last 2.5 and validates on those.
-* `classify`: normal / attack with categorical cross-entropy on a stratified 70/15/15 split of the
-  attack-data windows → `classification_results.csv`.
-* Grid search over lr, hidden size and batch size (`SPACE`); lowest validation loss wins.
-* Output `task3_results/<year>_M<M>_f<features>_<decoder>/`: `features_<layer>_<act>.csv`,
-  `hparams_<layer>_<act>.json`, and for `recon` `reconstruction_<layer>_<act>.csv.gz`.
-
-### Dataset
-* [WADI 2017](https://www.b-tu.de/owncloud/s/TLH4b6AXe3JN33n)
-* [WADI 2019](https://www.b-tu.de/owncloud/s/XR79Fpb3T92tdSe)
-
-### Results
-* [Task 1 Result](https://www.b-tu.de/owncloud/s/N6qccn7WXdTim93)
-* [Task 2 Result](https://www.b-tu.de/owncloud/s/sF56yfHGT7EA6qg)
-* [Task 3 Result Reconstruction Set 1 (2017)](https://www.b-tu.de/owncloud/s/a8d8Jk52CnnJC8W)
-* [Task 3 Result Classification Set 1 (2017)](https://www.b-tu.de/owncloud/s/ac6jtFNidcBmf44)
-* [Task 3 Result Reconstruction Set 2 (2019)](https://www.b-tu.de/owncloud/s/5osg4Gk2P56wX72)
-* [Task 3 Result Classification Set 2 (2019)](https://www.b-tu.de/owncloud/s/s6jdSxBWeNw5BtQ)
+Trains on `fold<f>_train.csv`, prints `ATTACK` / `no attack` for every test window, then the metrics per
+fold, overall and per attack type. Classifiers that do not fit the scenario are rejected.
+Output `results/s3_classify/<year>_M<M>_k<k>/scenario<s>_<source>_<clf>/`: `decisions.csv`, `metrics.json`.
