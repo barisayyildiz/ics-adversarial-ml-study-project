@@ -6,7 +6,9 @@ import argparse
 import gzip
 import json
 import math
+import operator
 import os
+import pickle
 from array import array
 
 import common
@@ -14,7 +16,7 @@ import common
 OUT = "results/s3_pca"
 
 
-# =================================================== PCA (plain Python)
+# =================================================== PCA
 
 def covariance(table):
     """table {col: values} -> (mean [n], covariance [n x n]); cov(X, Y) = sum (x - mean x)(y - mean y) / N."""
@@ -32,38 +34,39 @@ def covariance(table):
     return mean, cov
 
 
-def jacobi_eigen(matrix, max_sweeps=50):
+def jacobi_eigen(matrix, max_steps=100000):
     """symmetric matrix -> (eigenvalues, eigenvectors), sorted by eigenvalue, largest first.
-    Jacobi method: rotations that set one off-diagonal value to 0 until the matrix is diagonal."""
+    Jacobi method: pick the largest off-diagonal value, rotate it to 0, repeat until the matrix is diagonal."""
     n = len(matrix)
     a = [row[:] for row in matrix]
     v = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]   # column j = eigenvector j
     diag = sum(a[i][i] ** 2 for i in range(n))
-    for _ in range(max_sweeps):
-        off = sum(a[i][j] ** 2 for i in range(n) for j in range(i + 1, n))
-        if off <= 1e-24 * diag or off == 0.0:
+    for _ in range(max_steps):
+        # largest off-diagonal value a[p][q]
+        p, q = 0, 1
+        for i in range(n):
+            for j in range(i + 1, n):
+                if abs(a[i][j]) > abs(a[p][q]):
+                    p, q = i, j
+        if a[p][q] ** 2 <= 1e-24 * diag:                              # (almost) diagonal: done
             break
-        for p in range(n - 1):
-            for q in range(p + 1, n):
-                if a[p][q] == 0.0:
-                    continue
-                # rotation angle that makes a[p][q] = 0
-                theta = (a[q][q] - a[p][p]) / (2 * a[p][q])
-                t = (1.0 if theta >= 0 else -1.0) / (abs(theta) + math.sqrt(theta * theta + 1))
-                c = 1 / math.sqrt(t * t + 1)
-                s = t * c
-                for k in range(n):                                    # a = a * J (columns p, q)
-                    akp, akq = a[k][p], a[k][q]
-                    a[k][p] = c * akp - s * akq
-                    a[k][q] = s * akp + c * akq
-                for k in range(n):                                    # a = J^T * a (rows p, q)
-                    apk, aqk = a[p][k], a[q][k]
-                    a[p][k] = c * apk - s * aqk
-                    a[q][k] = s * apk + c * aqk
-                for k in range(n):                                    # v = v * J
-                    vkp, vkq = v[k][p], v[k][q]
-                    v[k][p] = c * vkp - s * vkq
-                    v[k][q] = s * vkp + c * vkq
+        # c = cos, s = sin of the rotation angle that makes a[p][q] = 0 (theta is a helper, not the angle)
+        theta = (a[q][q] - a[p][p]) / (2 * a[p][q])
+        t = (1.0 if theta >= 0 else -1.0) / (abs(theta) + math.sqrt(theta * theta + 1))
+        c = 1 / math.sqrt(t * t + 1)
+        s = t * c
+        for k in range(n):                                            # a = a * J (columns p, q)
+            akp, akq = a[k][p], a[k][q]
+            a[k][p] = c * akp - s * akq
+            a[k][q] = s * akp + c * akq
+        for k in range(n):                                            # a = J^T * a (rows p, q)
+            apk, aqk = a[p][k], a[q][k]
+            a[p][k] = c * apk - s * aqk
+            a[q][k] = s * apk + c * aqk
+        for k in range(n):                                            # v = v * J
+            vkp, vkq = v[k][p], v[k][q]
+            v[k][p] = c * vkp - s * vkq
+            v[k][q] = s * vkp + c * vkq
     order = sorted(range(n), key=lambda i: a[i][i], reverse=True)
     values = [a[i][i] for i in order]
     vectors = [[v[k][i] for k in range(n)] for i in order]           # vectors[j] = j-th eigenvector
@@ -87,7 +90,8 @@ def project(table, mean, vectors, K):
     out = []
     for t in range(common.n_rows(table)):
         x = [table[c][t] - m for c, m in zip(cols, mean)]
-        out.append([sum(xj * vj for xj, vj in zip(x, vectors[i])) for i in range(K)])
+        # dot product x · vectors[i]: sum of x[j] * vectors[i][j] (map(mul) is ~2x faster than a generator)
+        out.append([sum(map(operator.mul, x, vectors[i])) for i in range(K)])
     return out
 
 
@@ -123,8 +127,17 @@ def main(argv=None):
     print(f"train (normal file) {common.n_rows(train)} rows, test (attack file) {common.n_rows(test)} rows, "
           f"{len(train)} columns")
 
-    print("covariance matrix ...")
-    mean, cov = covariance(train)
+    # covariance only depends on the year: computed once, then read from data/cache (delete the file to recompute)
+    cache = os.path.join(common.CACHE, f"cov_{a.year}.pkl")
+    if os.path.exists(cache):
+        print(f"covariance matrix from {cache}")
+        with open(cache, "rb") as f:
+            mean, cov = pickle.load(f)
+    else:
+        print("covariance matrix ...")
+        mean, cov = covariance(train)
+        with open(cache, "wb") as f:
+            pickle.dump((mean, cov), f)
     print("eigenvalues / eigenvectors ...")
     values, vectors = jacobi_eigen(cov)
 

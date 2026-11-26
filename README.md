@@ -50,7 +50,8 @@ Train = normal file, test = attack file, min-max scaler of the normal file. Plai
 method, K = smallest dimension with `Σ_{i≤K} λ_i / Σ λ_i > β` (or `--components`). Every reading is centred
 and projected onto the first K eigenvectors.
 Output `results/s3_pca/<year>/`: `pca_beta<β>_{train,test}.csv.gz` (row, time, label, f0, …), `eigenvalues.json`.
-Takes ~20 min per year (1.2M rows in plain Python).
+Takes ~20 min per year (1.2M rows in plain Python); the covariance is cached in `data/cache/cov_<year>.pkl`,
+so later runs (other `--beta` / `--components`) only redo Jacobi + projection.
 
 ## Task 2 b) – `python toolbox.py -s s3-features [--models dense_relu lstm_tanh] [--epochs 10] [--k 8]`
 
